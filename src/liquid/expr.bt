@@ -1,0 +1,10 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Expr — base class of every expression node (literals, variable paths,
+/// filtered values, comparisons, `and` / `or`).
+typed Value subclass: Expr
+
+  /// Evaluate in `scope`. Returns `{value, errors}`; `errors` is a list of
+  /// LiquidError (empty when everything resolved).
+  eval: _scope :: Scope -> Tuple => self subclassResponsibility

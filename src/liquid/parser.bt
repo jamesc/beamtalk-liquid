@@ -1,0 +1,433 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Parser — turns Segments into an AST (recursive descent).
+///
+/// Blocks (`if`, `unless`, `for`) recurse into their bodies until the
+/// closing tag, so they nest. Errors inside one tag are recorded and parsing
+/// continues with the next, so a template with several mistakes reports all
+/// of them. Within a tag, parsing stops at the first error.
+typed Object subclass: Parser
+
+  // ---- errors -------------------------------------------------------------
+  class failAt: tok :: Token message: msg :: String -> Never =>
+    Error
+      signal: msg
+      reason: (LiquidError
+        kind: #parse
+        line: tok line
+        column: tok column
+        detail: msg)
+
+  class failSeg: seg :: Segment message: msg :: String -> Never =>
+    Error
+      signal: msg
+      reason: (LiquidError
+        kind: #parse
+        line: seg line
+        column: seg column
+        detail: msg)
+
+  class failKind: kind :: Symbol at: tok :: Token message: msg :: String -> Never =>
+    Error
+      signal: msg
+      reason: (LiquidError
+        kind: kind
+        line: tok line
+        column: tok column
+        detail: msg)
+
+  // ---- expressions --------------------------------------------------------
+
+  /// A literal or variable path. Returns `{expr, rest}`.
+  class primary: toks :: List seg: seg :: Segment -> Tuple =>
+    toks isEmpty ifTrue: [self failSeg: seg message: "Expression expected"]
+    t := toks first
+    (t kind =:= #number or: [
+      t kind =:= #string
+    ]) ifTrue: [^{Literal new: #{#value => t value}, toks rest}]
+    t kind =:= #ident
+      ifFalse: [
+        (t isOp: "(") ifTrue: [
+          self failAt: t message: "Ranges are not supported"
+        ]
+        self failAt: t message: "Expression expected, got '{t value}'"
+      ]
+    t value =:= "true" ifTrue: [^{Literal new: #{#value => true}, toks rest}]
+    t value =:= "false" ifTrue: [^{Literal new: #{#value => false}, toks rest}]
+    (t value =:= "nil" or: [
+      t value =:= "null"
+    ]) ifTrue: [^{Literal new: #{#value => nil}, toks rest}]
+    self variable: toks seg: seg
+
+  /// A variable path: `a`, `a.b`, `a[0]`, `a["k"].b`.
+  class variable: toks :: List seg: seg :: Segment -> Tuple =>
+    root := toks first
+    parts := #(Literal new: #{#value => root value})
+    text := root value
+    rest := toks rest
+    more := true
+    [more and: [rest isNotEmpty]]
+      whileTrue: [
+        t := rest first
+        (t isOp: ".")
+          ifTrue: [
+            (rest size < 2 or: [
+              (rest rest first kind =:= #ident) not
+            ]) ifTrue: [self failAt: t message: "Identifier expected after '.'"]
+            name := rest rest first value
+            parts := parts ++ #(Literal new: #{#value => name})
+            text := text ++ "." ++ name
+            rest := rest rest rest
+          ]
+          ifFalse: [
+            (t isOp: "[")
+              ifTrue: [
+                {sub, afterSub} := self primary: rest rest seg: seg
+                (afterSub isEmpty or: [
+                  (afterSub first isOp: "]") not
+                ]) ifTrue: [self failAt: t message: "']' expected"]
+                parts := parts ++ #(sub)
+                text := text ++ "[...]"
+                rest := afterSub rest
+              ]
+              ifFalse: [more := false]
+          ]
+      ]
+    {VarRef new: #{
+      #parts => parts,
+      #text => text,
+      #line => root line,
+      #column => root column
+    }, rest}
+
+  /// An expression with optional `| filter: arg, arg` stages.
+  class filtered: toks :: List seg: seg :: Segment -> Tuple =>
+    {base, rest} := self primary: toks seg: seg
+    filters := #()
+    [rest isNotEmpty and: [rest first isOp: "|"]]
+      whileTrue: [
+        pipe := rest first
+        rest := rest rest
+        (rest isEmpty or: [
+          (rest first kind =:= #ident) not
+        ]) ifTrue: [self failAt: pipe message: "Filter expected"]
+        nameTok := rest first
+        rest := rest rest
+        args := #()
+        (rest isNotEmpty and: [rest first isOp: ":"])
+          ifTrue: [
+            colon := rest first
+            rest := rest rest
+            (rest isEmpty or: [
+              rest first isOp: "|"
+            ]) ifTrue: [self failAt: colon message: "Arguments expected"]
+            more := true
+            [more]
+              whileTrue: [
+                {arg, afterArg} := self primary: rest seg: seg
+                args := args ++ #(arg)
+                rest := afterArg
+                (rest isNotEmpty and: [
+                  rest first isOp: ","
+                ]) ifTrue: [rest := rest rest] ifFalse: [more := false]
+              ]
+          ]
+        arity := Filters arity: nameTok value
+        arity isNil
+          ifTrue: [
+            self
+              failKind: #unknown_filter
+              at: nameTok
+              message: "Unknown filter '{nameTok value}'"
+          ]
+        {lo, hi} := arity
+        (args size < lo or: [args size > hi])
+          ifTrue: [
+            self failAt: nameTok message: "Wrong number of arguments to '{nameTok value}' (expected {lo} to {hi}, got {args size})"
+          ]
+        filters := filters
+          ++ #(FilterCall
+            new: #{
+              #name => nameTok value,
+              #args => args,
+              #line => nameTok line,
+              #column => nameTok column
+            })
+      ]
+    filters isEmpty ifTrue: [^{base, rest}]
+    {Filtered new: #{#base => base, #filters => filters}, rest}
+
+  class isComparison: t :: Token -> Boolean =>
+    (t kind =:= #op and: [
+      #("==", "!=", "<>", "<", ">", "<=", ">=") includes: t value
+    ]) or: [t isIdent: "contains"]
+
+  class isLogic: t :: Token -> Boolean =>
+    (t isIdent: "and") or: [t isIdent: "or"]
+
+  /// A condition: `x`, `x op y`, chained with `and` / `or` (no precedence,
+  /// right-associative). Returns `{expr, rest}`.
+  class condition: toks :: List seg: seg :: Segment -> Tuple =>
+    {left, rest} := self primary: toks seg: seg
+    (rest isNotEmpty and: [self isComparison: rest first])
+      ifTrue: [
+        opTok := rest first
+        {right, afterRight} := self primary: rest rest seg: seg
+        left := Compare
+          new: #{
+            #op => opTok value,
+            #left => left,
+            #right => right,
+            #line => opTok line,
+            #column => opTok column
+          }
+        rest := afterRight
+      ]
+    (rest isNotEmpty and: [self isLogic: rest first])
+      ifTrue: [
+        logicTok := rest first
+        {rhs, afterRhs} := self condition: rest rest seg: seg
+        ^{Logic new: #{
+          #op => logicTok value,
+          #left => left,
+          #right => rhs
+        }, afterRhs}
+      ]
+    {left, rest}
+
+  /// Parse the whole condition of an `if` / `elsif` / `unless` tag.
+  class conditionOf: seg :: Segment -> Expr =>
+    {cond, rest} := self condition: seg tokens rest seg: seg
+    rest isEmpty
+      ifFalse: [
+        self failAt: rest first message: "Expected condition, got '{rest first value}'"
+      ]
+    cond
+
+  // ---- blocks -------------------------------------------------------------
+
+  /// Parse segments until one of the `terminators` tags (or the end).
+  /// Returns `{nodes, rest, terminatorSegment | nil, errors}`.
+  class parse: segs :: List terminators: terms :: List -> Tuple =>
+    rest := segs
+    nodes := #()
+    errs := #()
+    term := nil
+    [term isNil and: [rest isNotEmpty]]
+      whileTrue: [
+        seg := rest first
+        rest := rest rest
+        seg kind =:= #text
+          ifTrue: [
+            nodes := nodes addFirst: (TextNode new: #{#text => seg text})
+          ]
+          ifFalse: [
+            seg kind =:= #output
+              ifTrue: [
+                [
+                  nodes := nodes addFirst: (self outputNode: seg)
+                ] on: Error do: [:e | errs := errs ++ #(e reason)]
+              ]
+              ifFalse: [
+                name := seg tagName
+                name isNil
+                  ifTrue: [
+                    errs := errs
+                      ++ #(LiquidError
+                        kind: #parse
+                        line: seg line
+                        column: seg column
+                        detail: "Tag name expected")
+                  ]
+                  ifFalse: [
+                    (terms includes: name)
+                      ifTrue: [term := seg]
+                      ifFalse: [
+                        (name =:= "if" or: [name =:= "unless"])
+                          ifTrue: [
+                            {node, afterIf, ifErrs} := self parseIf: seg rest: rest
+                            nodes := nodes addFirst: node
+                            rest := afterIf
+                            errs := errs ++ ifErrs
+                          ]
+                          ifFalse: [
+                            name =:= "for"
+                              ifTrue: [
+                                {forNode, afterFor, forErrs} := self parseFor: seg rest: rest
+                                nodes := nodes addFirst: forNode
+                                rest := afterFor
+                                errs := errs ++ forErrs
+                              ]
+                              ifFalse: [
+                                errs := errs ++ #(self unexpectedTag: seg name: name)
+                              ]
+                          ]
+                      ]
+                  ]
+              ]
+          ]
+      ]
+    {nodes reversed, rest, term, errs}
+
+  class unexpectedTag: seg :: Segment name: name :: String -> LiquidError =>
+    known := #("elsif", "else", "endif", "endunless", "endfor", "endraw", "endcomment")
+    (known includes: name)
+      ifTrue: [
+        LiquidError
+          kind: #parse
+          line: seg line
+          column: seg column
+          detail: "Unexpected tag '{name}'"
+      ]
+      ifFalse: [
+        LiquidError
+          kind: #unknown_tag
+          line: seg line
+          column: seg column
+          detail: "Unknown tag '{name}'"
+      ]
+
+  class outputNode: seg :: Segment -> OutputNode =>
+    {expr, rest} := self filtered: seg tokens seg: seg
+    rest isEmpty ifFalse: [
+      self failAt: rest first message: "Unexpected '{rest first value}' in output"
+    ]
+    OutputNode new: #{#expr => expr}
+
+  /// `if` / `unless`. Returns `{node, rest, errors}`.
+  class parseIf: seg :: Segment rest: input :: List -> Tuple =>
+    name := seg tagName ifNil: [""]
+    endName := "end" ++ name
+    terms := #("elsif", "else", endName)
+    errs := #()
+    cond := Literal new: #{#value => false}
+    [
+      cond := self conditionOf: seg
+    ] on: Error do: [:e | errs := errs ++ #(e reason)]
+    {body, rest, term, bodyErrs} := self parse: input terminators: terms
+    errs := errs ++ bodyErrs
+    branches := #({cond, body})
+    elseBody := #()
+    seenElse := false
+    closed := false
+    [closed not and: [term isNil not]]
+      whileTrue: [
+        current := term
+        tname := current tagName
+        tname =:= endName
+          ifTrue: [
+            closed := true
+            term := nil
+          ]
+          ifFalse: [
+            elsifCond := Literal new: #{#value => false}
+            tname =:= "elsif"
+              ifTrue: [
+                [
+                  elsifCond := self conditionOf: current
+                ] on: Error do: [:e | errs := errs ++ #(e reason)]
+              ]
+            {clause, afterClause, nextTerm, clauseErrs} := self parse: rest terminators: terms
+            errs := errs ++ clauseErrs
+            rest := afterClause
+            term := nextTerm
+            seenElse
+              ifFalse: [
+                tname =:= "elsif"
+                  ifTrue: [branches := branches ++ #({elsifCond, clause})]
+                  ifFalse: [
+                    elseBody := clause
+                    seenElse := true
+                  ]
+              ]
+          ]
+      ]
+    closed
+      ifFalse: [
+        errs := errs
+          ++ #(LiquidError
+            kind: #unclosed
+            line: seg line
+            column: seg column
+            detail: "Expected '{endName}'")
+      ]
+    {IfNode new: #{
+      #negate => (name =:= "unless"),
+      #branches => branches,
+      #elseBody => elseBody
+    }, rest, errs}
+
+  /// `for x in collection` ... `else` ... `endfor`. Returns `{node, rest, errors}`.
+  class parseFor: seg :: Segment rest: input :: List -> Tuple =>
+    errs := #()
+    varName := ""
+    collection := Literal new
+    collectionText := ""
+    [
+      toks := seg tokens rest
+      (toks size >= 2 and: [
+        toks first kind =:= #ident and: [toks rest first isIdent: "in"]
+      ]) ifFalse: [
+        self failSeg: seg message: "Expected 'for <name> in <collection>'"
+      ]
+      varName := toks first value
+      {coll, after} := self primary: toks rest rest seg: seg
+      after isEmpty
+        ifFalse: [
+          self failAt: after first message: "Unsupported 'for' parameter '{after first value}'"
+        ]
+      collection := coll
+      collectionText := (coll isKindOf: VarRef) ifTrue: [
+        coll text
+      ] ifFalse: ["literal"]
+    ] on: Error do: [:e | errs := errs ++ #(e reason)]
+    {body, rest, term, bodyErrs} := self parse: input terminators: #("else", "endfor")
+    errs := errs ++ bodyErrs
+    elseBody := #()
+    closed := false
+    seenElse := false
+    [closed not and: [term isNil not]]
+      whileTrue: [
+        tname := term tagName
+        tname =:= "endfor"
+          ifTrue: [
+            closed := true
+            term := nil
+          ]
+          ifFalse: [
+            {clause, afterClause, nextTerm, clauseErrs} := self parse: rest terminators: #("else", "endfor")
+            errs := errs ++ clauseErrs
+            rest := afterClause
+            term := nextTerm
+            seenElse
+              ifFalse: [
+                elseBody := clause
+                seenElse := true
+              ]
+          ]
+      ]
+    closed
+      ifFalse: [
+        errs := errs
+          ++ #(LiquidError
+            kind: #unclosed
+            line: seg line
+            column: seg column
+            detail: "Expected 'endfor'")
+      ]
+    {ForNode
+      new: #{
+        #varName => varName,
+        #collection => collection,
+        #collectionText => collectionText,
+        #body => body,
+        #elseBody => elseBody
+      }, rest, errs}
+
+  // ---- entry point --------------------------------------------------------
+
+  /// Parse all segments. Returns `{nodes, errors}`.
+  class parseAll: segs :: List -> Tuple =>
+    {nodes, _rest, _term, errs} := self parse: segs terminators: #()
+    {nodes, errs}

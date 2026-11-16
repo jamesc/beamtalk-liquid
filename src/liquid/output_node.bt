@@ -1,0 +1,13 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// OutputNode — `{{ expr | filters }}`.
+///
+/// The value is converted to text and emitted as is. It is never scanned
+/// again for template markup.
+typed AstNode subclass: OutputNode
+  field: expr :: Expr = Literal new
+
+  render: scope :: Scope -> Tuple =>
+    {value, errs} := self.expr eval: scope
+    {Renderer stringify: value, errs}

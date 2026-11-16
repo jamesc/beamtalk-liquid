@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// AstNode — base class of every template-level AST node (text, output, if, for).
+typed Value subclass: AstNode
+
+  /// Render in `scope`. Returns `{text, errors}`.
+  render: _scope :: Scope -> Tuple => self subclassResponsibility

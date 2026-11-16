@@ -1,0 +1,42 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// LiquidError — a tagged error returned in the `error` side of a `Result`.
+///
+/// `kind` is one of `#lex`, `#parse`, `#unknown_tag`, `#unknown_filter`,
+/// `#unclosed`, `#undefined_variable` or `#render`. `line` and `column` are
+/// 1-based and count Unicode codepoints, not bytes.
+///
+/// Parse and strict-render failures can carry several errors. A LiquidError
+/// always describes the FIRST one in its own fields; `rest` holds the
+/// remaining ones in source order and `errors` returns all of them.
+typed Value subclass: LiquidError
+  field: kind :: Symbol = #parse
+  field: line :: Integer = 1
+  field: column :: Integer = 1
+  field: detail :: String = ""
+  field: rest :: List = #()
+
+  /// Build one error. `rest` starts empty.
+  class kind: kind :: Symbol line: line :: Integer column: column :: Integer detail: detail :: String -> LiquidError =>
+    LiquidError new: #{
+      #kind => kind,
+      #line => line,
+      #column => column,
+      #detail => detail
+    }
+
+  /// Combine a non-empty list of errors into one. The first becomes the
+  /// primary; the others become `rest`.
+  class fromList: errors :: List -> LiquidError =>
+    first := errors first
+    first withRest: (errors rest)
+
+  /// Every error, primary first.
+  errors -> List => #(self withRest: #()) ++ self.rest
+
+  /// Number of errors carried.
+  count -> Integer => 1 + self.rest size
+
+  /// "kind at line:column: detail"
+  message -> String => "{self.kind} at {self.line}:{self.column}: {self.detail}"

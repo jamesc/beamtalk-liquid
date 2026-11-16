@@ -1,0 +1,72 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Compare — `left op right` for `== != <> < > <= >= contains`.
+///
+/// Semantics follow Solid's BinaryCondition (see README). A comparison that
+/// is a render error (ordering a string against a number) yields `false`
+/// and records a `#render` error.
+typed Expr subclass: Compare
+  field: op :: String = "=="
+  field: left :: Expr = Literal new
+  field: right :: Expr = Literal new
+  field: line :: Integer = 1
+  field: column :: Integer = 1
+
+  /// `{Boolean, error message | nil}`.
+  class apply: op :: String to: l :: Object | Nil and: r :: Object | Nil -> Tuple =>
+    (l isKindOf: Dictionary) ifTrue: [^{false, nil}]
+    (r isKindOf: Dictionary) ifTrue: [^{false, nil}]
+    op =:= "contains" ifTrue: [^{(self contains: l item: r), nil}]
+    (op =:= "==") ifTrue: [^{l == r, nil}]
+    (op =:= "!=" or: [op =:= "<>"]) ifTrue: [^{(l == r) not, nil}]
+    self
+      order: op
+      left: l
+      right: r
+
+  class contains: l :: Object | Nil item: r :: Object | Nil -> Boolean =>
+    (l isNil or: [r isNil]) ifTrue: [^false]
+    (l isKindOf: List) ifTrue: [^l includes: r]
+    (l isKindOf: String) ifTrue: [^l includesSubstring: (Renderer stringify: r)]
+    false
+
+  /// Ordering operators `< > <= >=`.
+  class order: op :: String left: l :: Object | Nil right: r :: Object | Nil -> Tuple =>
+    (l isNil or: [r isNil]) ifTrue: [^{false, nil}]
+    lNum := l isKindOf: Number
+    rNum := r isKindOf: Number
+    lStr := l isKindOf: String
+    rStr := r isKindOf: String
+    (lStr and: [
+      rNum
+    ]) ifTrue: [^{false, "comparison of String with {r} failed"}]
+    (lNum and: [rStr])
+      ifTrue: [
+        kind := (l isKindOf: Float) ifTrue: ["Float"] ifFalse: ["Integer"]
+        ^{false, "comparison of {kind} with String failed"}
+      ]
+    ((lNum and: [rNum]) or: [lStr and: [rStr]]) ifFalse: [^{false, nil}]
+    op =:= "<" ifTrue: [^{l < r, nil}]
+    op =:= "<=" ifTrue: [^{l <= r, nil}]
+    op =:= ">" ifTrue: [^{l > r, nil}]
+    {l >= r, nil}
+
+  eval: scope :: Scope -> Tuple =>
+    {l, e1} := self.left eval: scope
+    {r, e2} := self.right eval: scope
+    {result, err} := Compare
+      apply: self.op
+      to: l
+      and: r
+    errs := e1 ++ e2
+    err isNil
+      ifFalse: [
+        errs := errs
+          ++ #(LiquidError
+            kind: #render
+            line: self.line
+            column: self.column
+            detail: err)
+      ]
+    {result, errs}

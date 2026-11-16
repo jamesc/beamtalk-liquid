@@ -1,0 +1,20 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Logic — `left and right` / `left or right`.
+///
+/// There is no precedence: the parser nests to the right, so
+/// `a and b or c` is `a and (b or c)`. Both sides are always evaluated, so
+/// strict-variable errors on either side are reported (as Solid does).
+typed Expr subclass: Logic
+  field: op :: String = "and"
+  field: left :: Expr = Literal new
+  field: right :: Expr = Literal new
+
+  eval: scope :: Scope -> Tuple =>
+    {l, e1} := self.left eval: scope
+    {r, e2} := self.right eval: scope
+    lt := Renderer truthy: l
+    rt := Renderer truthy: r
+    value := self.op =:= "and" ifTrue: [lt and: [rt]] ifFalse: [lt or: [rt]]
+    {value, e1 ++ e2}

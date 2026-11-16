@@ -1,0 +1,266 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: TemplateTest
+
+  // ---- helpers
+
+  /// The rendered text, or the error message if parse or render failed.
+  class text: source :: String vars: vars :: Dictionary -> String =>
+    (self run: source vars: vars) ifOk: [:t |
+      t
+    ] ifError: [:e | "ERROR " ++ e message]
+
+  class run: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t | t render: vars]
+
+  class strict: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t |
+      t render: vars options: #{#strictVariables => true}
+    ]
+
+  class parseError: source :: String -> LiquidError =>
+    (Liquid parse: source) error
+
+  // ---- API shape
+  testParseReturnsTemplateResult =>
+    r := Liquid parse: "hi"
+    self assert: r isOk
+    self assert: (r value isKindOf: Template)
+
+  testRenderReturnsResultOfString =>
+    r := (Liquid parse: "hi \{\{ n }}") value render: #{"n" => "there"}
+    self assert: r isOk
+    self assert: r value equals: "hi there"
+
+  testTemplateIsReusable =>
+    t := (Liquid parse: "\{\{ n }}") value
+    self assert: (t render: #{"n" => 1}) value equals: "1"
+    self assert: (t render: #{"n" => 2}) value equals: "2"
+
+  testRenderWithOptions =>
+    t := (Liquid parse: "\{\{ n }}") value
+    self assert: (t render: #{
+      "n" => 1
+    } options: #{#strictVariables => true}) value equals: "1"
+
+  testUnknownOptionIsError =>
+    t := (Liquid parse: "x") value
+    r := t render: #{} options: #{#strictVariable => true}
+    self assert: r isError
+    self assert: (r error detail includesSubstring: "Unknown render option")
+
+  testNonBooleanStrictOptionIsError =>
+    t := (Liquid parse: "x") value
+    self assert: (t render: #{} options: #{#strictVariables => "yes"}) isError
+
+  // ---- strict variables
+  testUndefinedVariableRendersEmptyByDefault =>
+    self assert: (TemplateTest text: "a\{\{ nope }}b" vars: #{}) equals: "ab"
+
+  testStrictUndefinedVariableIsError =>
+    r := TemplateTest strict: "a\{\{ nope }}b" vars: #{}
+    self assert: r isError
+    self assert: r error kind equals: #undefined_variable
+    self assert: r error detail equals: "Undefined variable: nope"
+    self assert: r error line equals: 1
+    self assert: r error column equals: 5
+
+  testStrictAccumulatesAllErrors =>
+    // Solid's test: `a{{ var1 }} {{ var2 }}b` gives two errors at columns 5 and 16: the position of the variable, not the opener.
+    r := TemplateTest strict: "a\{\{ var1 }} \{\{ var2 }}b" vars: #{}
+    self assert: r error count equals: 2
+    self assert: (r error errors collect: [:e :: LiquidError |
+      e column
+    ]) equals: #(5, 16)
+    self assert: (r error errors collect: [:e :: LiquidError |
+      e detail
+    ]) equals: #("Undefined variable: var1", "Undefined variable: var2")
+
+  testStrictErrorsAreInRenderOrderAcrossLines =>
+    r := TemplateTest strict: "\{\{ a }}\n\{\{ b }}" vars: #{}
+    self assert: (r error errors collect: [:e :: LiquidError |
+      e line
+    ]) equals: #(1, 2)
+
+  testStrictDefinedButNilIsNotAnError =>
+    self assert: (TemplateTest strict: "[\{\{ n }}]" vars: #{
+      "n" => nil
+    }) value equals: "[]"
+
+  testStrictFalseAndZeroAreDefined =>
+    self
+      assert: (TemplateTest strict: "\{\{ a }}\{\{ b }}" vars: #{
+        "a" => false,
+        "b" => 0
+      }) value
+      equals: "false0"
+
+  testStrictNestedMissingKeyIsUndefined =>
+    r := TemplateTest strict: "\{\{ issue.nope }}" vars: #{
+      "issue" => #{"title" => "T"}
+    }
+    self assert: r error detail equals: "Undefined variable: issue.nope"
+
+  testStrictThroughNilIsUndefined =>
+    r := TemplateTest strict: "\{\{ issue.a.b }}" vars: #{
+      "issue" => #{"a" => nil}
+    }
+    self assert: r isError
+
+  testStrictListIndexOutOfRangeIsUndefined =>
+    self assert: (TemplateTest strict: "\{\{ xs[5] }}" vars: #{
+      "xs" => #(1)
+    }) isError
+
+  testStrictChecksConditionVariables =>
+    r := TemplateTest strict: "\{% if typo %}x\{% endif %}" vars: #{}
+    self assert: r error kind equals: #undefined_variable
+
+  testStrictChecksForCollection =>
+    self assert: (TemplateTest strict: "\{% for x in typo %}\{% endfor %}" vars: #{}) isError
+
+  testStrictReportsErrorsInUntakenBranchesNot =>
+    // Only variables that are actually evaluated count.
+    self
+      assert: (TemplateTest strict: "\{% if a %}\{\{ typo }}\{% endif %}ok" vars: #{
+        "a" => false
+      }) value
+      equals: "ok"
+
+  testStrictDoesNotAffectForloop =>
+    self
+      assert: (TemplateTest strict: "\{% for x in xs %}\{\{ forloop.index }}\{% endfor %}" vars: #{
+        "xs" => #(1, 2)
+      }) value
+      equals: "12"
+
+  testStrictForloopOutsideLoopIsUndefined =>
+    self assert: (TemplateTest strict: "\{\{ forloop.index }}" vars: #{}) isError
+
+  testStrictWithFilterOnUndefined =>
+    r := TemplateTest strict: "\{\{ typo | upcase }}" vars: #{}
+    self assert: r isError
+
+  // ---- errors
+  testSingleParseErrorHasCountOne =>
+    e := TemplateTest parseError: "\{% if a %}"
+    self assert: e count equals: 1
+
+  testParseAccumulatesErrors =>
+    e := TemplateTest parseError: "\{% bogus %}\n\{\{ x | nope }}\n\{% if a %}"
+    self assert: e count equals: 3
+    self assert: (e errors collect: [:x :: LiquidError |
+      x kind
+    ]) equals: #(#unknown_tag, #unknown_filter, #unclosed)
+    self assert: (e errors collect: [:x :: LiquidError |
+      x line
+    ]) equals: #(1, 2, 3)
+
+  testPrimaryErrorIsTheFirstBySourcePosition =>
+    e := TemplateTest parseError: "\{% if a %}\n\{% bogus %}"
+    self assert: e count equals: 2
+    self assert: e kind equals: #unclosed
+    self assert: e line equals: 1
+    self assert: e rest first kind equals: #unknown_tag
+
+  testErrorsMixLexerAndParserInSourceOrder =>
+    e := TemplateTest parseError: "\{% bogus %}\{\{ a ; b }}\{% endif %}"
+    self assert: (e errors collect: [:x :: LiquidError |
+      x column
+    ]) equals: #(1, 17, 23)
+
+  testMessageIncludesPosition =>
+    e := TemplateTest parseError: "\n\{% bogus %}"
+    self assert: e message equals: "unknown_tag at 2:1: Unknown tag 'bogus'"
+
+  testUnclosedIfReportsAtOpener =>
+    e := TemplateTest parseError: "x\n  \{% if a %}body"
+    self assert: e kind equals: #unclosed
+    self assert: e line equals: 2
+    self assert: e column equals: 3
+    self assert: e detail equals: "Expected 'endif'"
+
+  testUnclosedUnlessAndFor =>
+    self assert: (TemplateTest parseError: "\{% unless a %}") detail equals: "Expected 'endunless'"
+    self assert: (TemplateTest parseError: "\{% for x in y %}") detail equals: "Expected 'endfor'"
+
+  testUnclosedInnerBlockOnlyReportsInner =>
+    e := TemplateTest parseError: "\{% if a %}\{% for x in y %}\{% endif %}"
+    self
+      assert: ((e errors collect: [:x :: LiquidError |
+        x detail
+      ]) includes: "Expected 'endfor'")
+
+  testStrayClosersAreErrors =>
+    self assert: (TemplateTest parseError: "\{% endif %}") detail equals: "Unexpected tag 'endif'"
+    self assert: (TemplateTest parseError: "\{% else %}") detail equals: "Unexpected tag 'else'"
+    self assert: (TemplateTest parseError: "\{% endfor %}") kind equals: #parse
+
+  testElseInsideForBodyDoesNotCloseIf =>
+    e := TemplateTest parseError: "\{% if a %}\{% for x in y %}\{% endif %}"
+    self assert: (e count >= 1)
+
+  testUnknownTagIsReported =>
+    e := TemplateTest parseError: "ok \{% frobnicate x %}"
+    self assert: e kind equals: #unknown_tag
+    self assert: e detail equals: "Unknown tag 'frobnicate'"
+    self assert: e column equals: 4
+
+  testAssignIsNotSupported =>
+    self assert: (Liquid parse: "\{% assign x = 1 %}") isError
+    self assert: (Liquid parse: "\{% assign x %}") isError
+
+  testEmptyOutputIsError =>
+    self assert: (TemplateTest parseError: "\{\{ }}") detail equals: "Expression expected"
+
+  testEmptyTagIsError =>
+    self assert: (TemplateTest parseError: "\{% %}") detail equals: "Tag name expected"
+
+  testTrailingGarbageInOutputIsError =>
+    self assert: (TemplateTest parseError: "\{\{ a b }}") kind equals: #parse
+
+  testBadConditionIsError =>
+    self assert: (TemplateTest parseError: "\{% if %}\{% endif %}") detail equals: "Expression expected"
+    self assert: (TemplateTest parseError: "\{% if a == %}\{% endif %}") kind equals: #parse
+    self assert: (TemplateTest parseError: "\{% if a b %}\{% endif %}") kind equals: #parse
+
+  testBadForIsError =>
+    self assert: (TemplateTest parseError: "\{% for %}\{% endfor %}") kind equals: #parse
+    self assert: (TemplateTest parseError: "\{% for x of y %}\{% endfor %}") kind equals: #parse
+
+  testForParametersAreNotSupported =>
+    e := TemplateTest parseError: "\{% for x in xs limit: 2 %}\{% endfor %}"
+    self assert: (e detail includesSubstring: "Unsupported 'for' parameter")
+
+  testRangesAreNotSupported =>
+    self assert: (TemplateTest parseError: "\{% for i in (1..3) %}\{% endfor %}") detail equals: "Ranges are not supported"
+
+  testSingleEqualsIsLexError =>
+    e := TemplateTest parseError: "\{% if a = 1 %}\{% endif %}"
+    self assert: e kind equals: #lex
+
+  testUnterminatedOutputPosition =>
+    e := TemplateTest parseError: "a\n  \{\{ x"
+    self assert: e line equals: 2
+    self assert: e column equals: 3
+
+  testUnterminatedStringPosition =>
+    e := TemplateTest parseError: "ab \{\{ ""x }}"
+    self assert: e kind equals: #lex
+    self assert: e column equals: 7
+
+  testErrorColumnsCountCodepointsNotBytes =>
+    e := TemplateTest parseError: "日本語😀\{% bogus %}"
+    self assert: e column equals: 5
+
+  testCaseSensitiveTags =>
+    self assert: (TemplateTest parseError: "\{% IF a %}\{% ENDIF %}") kind equals: #unknown_tag
+
+  testHyphenatedAndQuestionIdentifiers =>
+    self
+      assert: (TemplateTest text: "\{\{ my-var }}\{\{ ok? }}" vars: #{
+        "my-var" => "a",
+        "ok?" => "b"
+      })
+      equals: "ab"

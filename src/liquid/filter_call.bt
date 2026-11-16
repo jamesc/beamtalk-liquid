@@ -1,0 +1,9 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// FilterCall — one `| name: arg, arg` stage of a filtered expression.
+typed Value subclass: FilterCall
+  field: name :: String = ""
+  field: args :: List = #()
+  field: line :: Integer = 1
+  field: column :: Integer = 1

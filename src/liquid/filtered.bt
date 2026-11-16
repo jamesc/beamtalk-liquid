@@ -1,0 +1,36 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Filtered — an expression followed by zero or more filters, applied left
+/// to right with the running value as the first argument.
+typed Expr subclass: Filtered
+  field: base :: Expr = Literal new
+  field: filters :: List = #()
+
+  eval: scope :: Scope -> Tuple =>
+    {value, errs} := self.base eval: scope
+    self.filters
+      do: [:f :: FilterCall |
+        argValues := #()
+        f args
+          do: [:a :: Expr |
+            {av, ae} := a eval: scope
+            errs := errs ++ ae
+            argValues := argValues ++ #(av)
+          ]
+        {result, err} := Filters
+          apply: f name
+          to: value
+          args: argValues
+        err isNil
+          ifFalse: [
+            errs := errs
+              ++ #(LiquidError
+                kind: #render
+                line: f line
+                column: f column
+                detail: err)
+          ]
+        value := result
+      ]
+    {value, errs}

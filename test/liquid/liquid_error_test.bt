@@ -1,0 +1,45 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: LiquidErrorTest
+
+  testFields =>
+    e := LiquidError
+      kind: #parse
+      line: 2
+      column: 5
+      detail: "Filter expected"
+    self assert: e kind equals: #parse
+    self assert: e line equals: 2
+    self assert: e column equals: 5
+    self assert: e detail equals: "Filter expected"
+
+  testSingleErrorListsItself =>
+    e := LiquidError
+      kind: #parse
+      line: 1
+      column: 1
+      detail: "x"
+    self assert: e count equals: 1
+    self assert: e errors size equals: 1
+
+  testFromListKeepsOrder =>
+    a := LiquidError
+      kind: #parse
+      line: 1
+      column: 1
+      detail: "a"
+    b := LiquidError
+      kind: #parse
+      line: 2
+      column: 1
+      detail: "b"
+    c := LiquidError
+      kind: #parse
+      line: 3
+      column: 1
+      detail: "c"
+    e := LiquidError fromList: #(a, b, c)
+    self assert: e detail equals: "a"
+    self assert: e count equals: 3
+    self assert: (e errors collect: [:x | x detail]) equals: #("a", "b", "c")

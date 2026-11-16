@@ -1,0 +1,40 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Template — a parsed template. Parse once with `Liquid parse:`, render
+/// many times.
+typed Value subclass: Template
+  field: nodes :: List = #()
+
+  /// Render with `vars`. Undefined variables render as empty text.
+  render: vars :: Dictionary -> Result => self render: vars options: #{}
+
+  /// Render with options. Supported: `#{#strictVariables => Boolean}`; when
+  /// true, an undefined variable is recorded as an error and `render:`
+  /// returns it (the partial text is not returned).
+  render: vars :: Dictionary options: opts :: Dictionary -> Result =>
+    unknown := opts keys reject: [:k :: Object | k =:= #strictVariables]
+    unknown isEmpty
+      ifFalse: [
+        ^Result
+          error: (LiquidError
+            kind: #render
+            line: 1
+            column: 1
+            detail: "Unknown render option: {unknown first}")
+      ]
+    strict := opts at: #strictVariables ifAbsent: [false]
+    (strict =:= true or: [strict =:= false])
+      ifFalse: [
+        ^Result
+          error: (LiquidError
+            kind: #render
+            line: 1
+            column: 1
+            detail: "strictVariables must be a Boolean")
+      ]
+    scope := Scope new: #{#vars => vars, #strict => strict}
+    {text, errs} := Renderer renderAll: self.nodes scope: scope
+    errs isEmpty ifTrue: [
+      Result ok: text
+    ] ifFalse: [Result error: (LiquidError fromList: errs)]

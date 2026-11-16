@@ -1,0 +1,107 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Filters — the built-in filter set, matching Solid's standard_filter.ex
+/// for these names: default, upcase, downcase, strip, truncate, join, size,
+/// first, last, escape.
+typed Object subclass: Filters
+
+  /// `{minArgs, maxArgs}` for a filter, or nil if the name is unknown.
+  class arity: name :: String -> Tuple | Nil =>
+    name =:= "default" ifTrue: [^{0, 1}]
+    name =:= "truncate" ifTrue: [^{0, 2}]
+    name =:= "join" ifTrue: [^{0, 1}]
+    (#("upcase", "downcase", "strip", "size", "first", "last", "escape") includes: name) ifTrue: [
+      ^{0, 0}
+    ]
+    nil
+
+  /// Apply a filter. Returns `{value, errorMessage | nil}`.
+  class apply: name :: String to: input :: Object | Nil args: args :: List -> Tuple =>
+    name =:= "default" ifTrue: [^{self default: input args: args, nil}]
+    name =:= "upcase" ifTrue: [^{(Renderer stringify: input) uppercase, nil}]
+    name =:= "downcase" ifTrue: [^{(Renderer stringify: input) lowercase, nil}]
+    name =:= "strip" ifTrue: [^{(Renderer stringify: input) trim, nil}]
+    name =:= "truncate" ifTrue: [^self truncate: input args: args]
+    name =:= "join" ifTrue: [^{self join: input args: args, nil}]
+    name =:= "size" ifTrue: [^{self size: input, nil}]
+    name =:= "first" ifTrue: [^{self first: input, nil}]
+    name =:= "last" ifTrue: [^{self last: input, nil}]
+    name =:= "escape" ifTrue: [^{self escape: input, nil}]
+    {input, "Unknown filter: {name}"}
+
+  /// `default`: the argument (or "") when the input is nil, false, "", an
+  /// empty list or an empty map.
+  class default: input :: Object | Nil args: args :: List -> Object | Nil =>
+    fallback := args isEmpty ifTrue: [""] ifFalse: [args first]
+    empty := input isNil
+      or: [
+        input =:= false
+          or: [
+            ((input isKindOf: String) or: [
+              (input isKindOf: List) or: [input isKindOf: Dictionary]
+            ]) and: [input isEmpty]
+          ]
+      ]
+    empty ifTrue: [fallback] ifFalse: [input]
+
+  /// `truncate: length = 50, ellipsis = "..."`. The ellipsis counts towards the length.
+  class truncate: input :: Object | Nil args: args :: List -> Tuple =>
+    limit := args isEmpty ifTrue: [50] ifFalse: [args first]
+    (limit isKindOf: Integer) ifFalse: [
+      ^{input, "truncate: invalid integer {limit}"}
+    ]
+    ellipsis := args size < 2 ifTrue: [
+      "..."
+    ] ifFalse: [Renderer stringify: (args at: 2)]
+    text := Renderer stringify: input
+    text length > limit ifFalse: [^{text, nil}]
+    keep := limit - ellipsis length
+    keep < 0 ifTrue: [keep := 0]
+    {(text take: keep) ++ ellipsis, nil}
+
+  /// `join: glue = " "`. A non-list is treated as a one-element list.
+  class join: input :: Object | Nil args: args :: List -> String =>
+    glue := args isEmpty ifTrue: [" "] ifFalse: [Renderer stringify: args first]
+    items := self itemsOf: input
+    parts := #()
+    items do: [:each :: Object |
+      parts := parts addFirst: (Renderer stringify: each)
+    ]
+    parts reversed join: glue
+
+  /// A list view of a value: lists flatten, nil is empty, anything else is a single item.
+  class itemsOf: input :: Object | Nil -> List =>
+    input isNil ifTrue: [^#()]
+    (input isKindOf: List) ifTrue: [^input flatten]
+    #(input)
+
+  class size: input :: Object | Nil -> Integer =>
+    (input isKindOf: String) ifTrue: [^input length]
+    ((input isKindOf: List) or: [
+      input isKindOf: Dictionary
+    ]) ifTrue: [^input size]
+    0
+
+  class first: input :: Object | Nil -> Object | Nil =>
+    (input isKindOf: List) ifTrue: [
+      ^input isEmpty ifTrue: [nil] ifFalse: [input first]
+    ]
+    (input isKindOf: String) ifTrue: [
+      ^input isEmpty ifTrue: [nil] ifFalse: [input first]
+    ]
+    nil
+
+  class last: input :: Object | Nil -> Object | Nil =>
+    (input isKindOf: List) ifTrue: [
+      ^input isEmpty ifTrue: [nil] ifFalse: [input last]
+    ]
+    (input isKindOf: String) ifTrue: [
+      ^input isEmpty ifTrue: [nil] ifFalse: [input last]
+    ]
+    nil
+
+  /// HTML-escape `& < > " '` (as `&amp; &lt; &gt; &quot; &#39;`).
+  class escape: input :: Object | Nil -> String =>
+    text := Renderer stringify: input
+    ((((text replaceAll: "&" with: "&amp;") replaceAll: "<" with: "&lt;") replaceAll: ">" with: "&gt;") replaceAll: """" with: "&quot;") replaceAll: "'" with: "&#39;"
