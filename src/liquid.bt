@@ -1,0 +1,11 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Liquid — entry point for the liquid template engine.
+///
+/// Placeholder for BT-4918. The public API will be:
+///   `Liquid parse: source` returning `Result(Template, LiquidError)`.
+Object subclass: Liquid
+
+  /// Package version, until the parser lands.
+  class version => "0.1.0"

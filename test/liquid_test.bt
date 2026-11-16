@@ -1,0 +1,6 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: LiquidTest
+
+  testVersion => self assert: Liquid version equals: "0.1.0"
