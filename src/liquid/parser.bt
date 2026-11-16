@@ -209,7 +209,7 @@ typed Object subclass: Parser
 
   /// Parse segments until one of the `terminators` tags (or the end).
   /// Returns `{nodes, rest, terminatorSegment | nil, errors}`.
-  class parse: segs :: List terminators: terms :: List -> Tuple =>
+  class parse: segs :: List terminators: terms :: List depth: depth :: Integer -> Tuple =>
     rest := segs
     nodes := #()
     errs := #()
@@ -246,7 +246,10 @@ typed Object subclass: Parser
                       ifFalse: [
                         (name =:= "if" or: [name =:= "unless"])
                           ifTrue: [
-                            {node, afterIf, ifErrs} := self parseIf: seg rest: rest
+                            {node, afterIf, ifErrs} := self
+                              parseIf: seg
+                              rest: rest
+                              depth: depth + 1
                             nodes := nodes addFirst: node
                             rest := afterIf
                             errs := errs ++ ifErrs
@@ -254,7 +257,10 @@ typed Object subclass: Parser
                           ifFalse: [
                             name =:= "for"
                               ifTrue: [
-                                {forNode, afterFor, forErrs} := self parseFor: seg rest: rest
+                                {forNode, afterFor, forErrs} := self
+                                  parseFor: seg
+                                  rest: rest
+                                  depth: depth + 1
                                 nodes := nodes addFirst: forNode
                                 rest := afterFor
                                 errs := errs ++ forErrs
@@ -296,7 +302,8 @@ typed Object subclass: Parser
     OutputNode new: #{#expr => expr}
 
   /// `if` / `unless`. Returns `{node, rest, errors}`.
-  class parseIf: seg :: Segment rest: input :: List -> Tuple =>
+  class parseIf: seg :: Segment rest: input :: List depth: depth :: Integer -> Tuple =>
+    self checkDepth: depth at: seg
     name := seg tagName ifNil: [""]
     endName := "end" ++ name
     terms := #("elsif", "else", endName)
@@ -305,7 +312,10 @@ typed Object subclass: Parser
     [
       cond := self conditionOf: seg
     ] on: Error do: [:e | errs := errs ++ #(e reason)]
-    {body, rest, term, bodyErrs} := self parse: input terminators: terms
+    {body, rest, term, bodyErrs} := self
+      parse: input
+      terminators: terms
+      depth: depth
     errs := errs ++ bodyErrs
     branches := #({cond, body})
     elseBody := #()
@@ -328,7 +338,10 @@ typed Object subclass: Parser
                   elsifCond := self conditionOf: current
                 ] on: Error do: [:e | errs := errs ++ #(e reason)]
               ]
-            {clause, afterClause, nextTerm, clauseErrs} := self parse: rest terminators: terms
+            {clause, afterClause, nextTerm, clauseErrs} := self
+              parse: rest
+              terminators: terms
+              depth: depth
             errs := errs ++ clauseErrs
             rest := afterClause
             term := nextTerm
@@ -359,7 +372,8 @@ typed Object subclass: Parser
     }, rest, errs}
 
   /// `for x in collection` ... `else` ... `endfor`. Returns `{node, rest, errors}`.
-  class parseFor: seg :: Segment rest: input :: List -> Tuple =>
+  class parseFor: seg :: Segment rest: input :: List depth: depth :: Integer -> Tuple =>
+    self checkDepth: depth at: seg
     errs := #()
     varName := ""
     collection := Literal new
@@ -382,7 +396,10 @@ typed Object subclass: Parser
         coll text
       ] ifFalse: ["literal"]
     ] on: Error do: [:e | errs := errs ++ #(e reason)]
-    {body, rest, term, bodyErrs} := self parse: input terminators: #("else", "endfor")
+    {body, rest, term, bodyErrs} := self
+      parse: input
+      terminators: #("else", "endfor")
+      depth: depth
     errs := errs ++ bodyErrs
     elseBody := #()
     closed := false
@@ -396,7 +413,10 @@ typed Object subclass: Parser
             term := nil
           ]
           ifFalse: [
-            {clause, afterClause, nextTerm, clauseErrs} := self parse: rest terminators: #("else", "endfor")
+            {clause, afterClause, nextTerm, clauseErrs} := self
+              parse: rest
+              terminators: #("else", "endfor")
+              depth: depth
             errs := errs ++ clauseErrs
             rest := afterClause
             term := nextTerm
@@ -427,7 +447,40 @@ typed Object subclass: Parser
 
   // ---- entry point --------------------------------------------------------
 
-  /// Parse all segments. Returns `{nodes, errors}`.
+  /// Deepest allowed nesting of `if` / `unless` / `for` blocks. The parser
+  /// is recursive, so the limit bounds its stack use on hostile input.
+  class maxDepth -> Integer => 100
+
+  /// Abort the whole parse when a block opens deeper than `maxDepth`.
+  class checkDepth: depth :: Integer at: seg :: Segment -> Nil =>
+    depth > self maxDepth
+      ifTrue: [
+        msg := "Nesting too deep (limit {self maxDepth})"
+        Error
+          signal: msg
+          reason: (LiquidError
+            kind: #nesting
+            line: seg line
+            column: seg column
+            detail: msg)
+      ]
+    nil
+
+  /// Parse all segments. Returns `{nodes, errors}`. If nesting exceeds
+  /// `maxDepth` the result is `{#(), #(nestingError)}`: parsing stops at that
+  /// point rather than reporting an "unclosed" error for every ancestor.
   class parseAll: segs :: List -> Tuple =>
-    {nodes, _rest, _term, errs} := self parse: segs terminators: #()
-    {nodes, errs}
+    result := {#(), #()}
+    [
+      {nodes, _rest, _term, errs} := self
+        parse: segs
+        terminators: #()
+        depth: 0
+      result := {nodes, errs}
+    ]
+      on: Error
+      do: [:e |
+        (e reason isKindOf: LiquidError) ifFalse: [e pass]
+        result := {#(), #(e reason)}
+      ]
+    result

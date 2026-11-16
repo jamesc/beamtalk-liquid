@@ -22,6 +22,12 @@ TestCase subclass: TemplateTest
   class parseError: source :: String -> LiquidError =>
     (Liquid parse: source) error
 
+  // ---- nesting depth limit (parent follow-up on PR #1)
+
+  /// `n` nested `if` tags, one opener per line, around "x".
+  class nested: n :: Integer -> String =>
+    (("\{% if a %}\n") repeat: n) ++ "x" ++ (("\{% endif %}") repeat: n)
+
   // ---- API shape
   testParseReturnsTemplateResult =>
     r := Liquid parse: "hi"
@@ -264,3 +270,32 @@ TestCase subclass: TemplateTest
         "ok?" => "b"
       })
       equals: "ab"
+
+  testNestingAtTheLimitParsesAndRenders =>
+    self assert: Parser maxDepth equals: 100
+    r := TemplateTest run: (TemplateTest nested: 100) vars: #{"a" => true}
+    self assert: r isOk
+    self assert: (r value includesSubstring: "x")
+
+  testNestingBeyondTheLimitIsAnErrorWithPosition =>
+    e := TemplateTest parseError: (TemplateTest nested: 101)
+    self assert: e kind equals: #nesting
+    self assert: e line equals: 101
+    self assert: e column equals: 1
+    self assert: e detail equals: "Nesting too deep (limit 100)"
+    self assert: e count equals: 1
+
+  testHostileDepthReturnsAnErrorInsteadOfExhaustingTheStack =>
+    e := TemplateTest parseError: (TemplateTest nested: 5000)
+    self assert: e kind equals: #nesting
+    self assert: e line equals: 101
+
+  testNestedForsCountTowardsTheSameLimit =>
+    src := (("\{% for x in xs %}") repeat: 101) ++ (("\{% endfor %}") repeat: 101)
+    e := TemplateTest parseError: src
+    self assert: e kind equals: #nesting
+    self assert: e column equals: (100 * 17) + 1
+
+  testSiblingsDoNotAccumulateDepth =>
+    src := (("\{% if a %}x\{% endif %}") repeat: 500)
+    self assert: (Liquid parse: src) isOk

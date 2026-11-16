@@ -141,3 +141,13 @@ TestCase subclass: LexerTest
     self assert: errs first detail equals: "Comment tag not terminated"
     self assert: errs first line equals: 1
     self assert: errs first column equals: 1
+
+  // Lexing must be linear in the template size: no per-character O(n) list
+  // operations. about 200k characters of text and markup.
+  testLargeTemplateLexesInLinearTime =>
+    source := ("ab \{\{ x }} cd \{% if y %}z\{% endif %}\n") repeat: 6000
+    start := (Time monotonic: #millisecond)
+    {segs, errs} := Lexer tokenize: source
+    self assert: errs isEmpty
+    self assert: (segs size > 24000)
+    self assert: (((Time monotonic: #millisecond) - start) < 30000)

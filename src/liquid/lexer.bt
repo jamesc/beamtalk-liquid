@@ -42,10 +42,15 @@ typed Value subclass: Lexer
 
   /// Second element of a codepoint list, or 0.
   class second: cps :: List -> Integer =>
-    cps size < 2 ifTrue: [0] ifFalse: [cps rest first]
+    cps isEmpty ifTrue: [^0]
+    tail := cps rest
+    tail isEmpty ifTrue: [0] ifFalse: [tail first]
 
   class third: cps :: List -> Integer =>
-    cps size < 3 ifTrue: [0] ifFalse: [cps rest rest first]
+    cps isEmpty ifTrue: [^0]
+    tail := cps rest
+    tail isEmpty ifTrue: [^0]
+    tail rest isEmpty ifTrue: [0] ifFalse: [tail rest first]
 
   /// Line/column after moving over `consumed` codepoints.
   class advance: consumed :: List line: l :: Integer column: c :: Integer -> Tuple =>
