@@ -174,3 +174,19 @@ TestCase subclass: ForNodeTest
       "xs" => #(1, 2),
       "ys" => #()
     }) equals: "no-yno-y"
+
+  // Rendering must stay linear in the collection size (review finding on
+  // PR #1): a data-supplied list of tens of thousands of items.
+  testLargeCollectionRendersQuickly =>
+    items := (1 to: 150000) asList
+    start := (Time monotonic: #millisecond)
+    r := ForNodeTest run: "\{% for x in xs %}\{\{ x }},\{% endfor %}" vars: #{
+      "xs" => items
+    }
+    self assert: r isOk
+    self assert: (r value size > 150000)
+    j := ForNodeTest run: "\{\{ xs | join: ""-"" | size }}" vars: #{
+      "xs" => items
+    }
+    self assert: j isOk
+    self assert: (((Time monotonic: #millisecond) - start) < 5000)

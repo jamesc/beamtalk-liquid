@@ -7,15 +7,15 @@ typed Object subclass: Renderer
 
   /// Render nodes in order. Returns `{text, errors}`.
   class renderAll: nodes :: List scope: scope :: Scope -> Tuple =>
-    out := ""
-    errs := #()
+    pieces := #()
+    errChunks := #()
     nodes
       do: [:node :: AstNode |
         {text, nodeErrs} := node render: scope
-        out := out ++ text
-        errs := errs ++ nodeErrs
+        pieces := pieces addFirst: text
+        nodeErrs isEmpty ifFalse: [errChunks := errChunks addFirst: nodeErrs]
       ]
-    {out, errs}
+    {pieces reversed join, errChunks reversed flatten}
 
   /// Only `nil` and `false` are falsy (`0`, `""` and `#()` are truthy).
   class truthy: value :: Object | Nil -> Boolean =>

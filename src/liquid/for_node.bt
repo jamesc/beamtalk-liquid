@@ -32,7 +32,8 @@ typed AstNode subclass: ForNode
       ]
     parent := scope vars at: "forloop" ifAbsent: [nil]
     total := items size
-    out := ""
+    pieces := #()
+    errChunks := #(errs)
     position := 0
     items
       do: [:item :: Object |
@@ -49,8 +50,8 @@ typed AstNode subclass: ForNode
         }
         inner := (scope bind: self.varName to: item) bind: "forloop" to: forloop
         {text, bodyErrs} := Renderer renderAll: self.body scope: inner
-        out := out ++ text
-        errs := errs ++ bodyErrs
+        pieces := pieces addFirst: text
+        bodyErrs isEmpty ifFalse: [errChunks := errChunks addFirst: bodyErrs]
         position := position + 1
       ]
-    {out, errs}
+    {pieces reversed join, errChunks reversed flatten}

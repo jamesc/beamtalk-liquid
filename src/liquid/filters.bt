@@ -65,8 +65,10 @@ typed Object subclass: Filters
     glue := args isEmpty ifTrue: [" "] ifFalse: [Renderer stringify: args first]
     items := self itemsOf: input
     parts := #()
-    items do: [:each :: Object | parts := parts ++ #(Renderer stringify: each)]
-    parts join: glue
+    items do: [:each :: Object |
+      parts := parts addFirst: (Renderer stringify: each)
+    ]
+    parts reversed join: glue
 
   /// A list view of a value: lists flatten, nil is empty, anything else is a single item.
   class itemsOf: input :: Object | Nil -> List =>
