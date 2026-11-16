@@ -139,7 +139,7 @@ inside an untaken `if` branch is not reported. Filters such as
 
 | Field | Meaning |
 |---|---|
-| `kind` | `#lex`, `#parse`, `#unknown_tag`, `#unknown_filter`, `#unclosed`, `#undefined_variable`, `#render` |
+| `kind` | `#lex`, `#parse`, `#unknown_tag`, `#unknown_filter`, `#unclosed`, `#nesting`, `#limit`, `#undefined_variable`, `#render` |
 | `line`, `column` | 1-based; **columns count Unicode codepoints**, not bytes |
 | `detail` | the message, e.g. `Expected 'endif'`, `Filter expected`, `Unknown tag 'x'` |
 
@@ -149,6 +149,21 @@ source position in its own fields and also carries the others: `errors` returns
 every error (primary first, each a LiquidError), `count` their number, and
 `rest` the remaining ones. `message` renders `kind at line:column: detail`.
 Callers that only care about one error can ignore the list.
+
+### Nesting limit
+
+`if`, `unless` and `for` blocks may nest **100 levels deep** (`Parser maxDepth`).
+The parser is recursive, so the limit bounds its stack use on hostile input.
+A block opened at depth 101 fails the parse with a single `#nesting` error,
+`Nesting too deep (limit 100)`, positioned at that opener's line and column.
+Parsing stops there: ancestors are not reported as unclosed. Siblings do not
+accumulate depth, so any number of blocks side by side is fine.
+
+Expressions recurse too (once per `and` / `or`, per `[` subscript and per
+filter), so a single `{{ }}` or `{% %}` markup may hold at most **1000 tokens**
+(`Parser maxTokens`). A longer one fails the parse with one `#limit` error,
+`Expression too long (limit 1000 tokens)`, at the markup's line and column.
+Real templates use tens of tokens per markup.
 
 Within a single tag parsing stops at the first error; the parser then resumes at
 the next tag, so independent mistakes in one template are all reported.

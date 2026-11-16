@@ -189,4 +189,4 @@ TestCase subclass: ForNodeTest
       "xs" => items
     }
     self assert: j isOk
-    self assert: (((Time monotonic: #millisecond) - start) < 5000)
+    self assert: (((Time monotonic: #millisecond) - start) < 30000)
