@@ -218,6 +218,7 @@ typed Object subclass: Parser
       whileTrue: [
         seg := rest first
         rest := rest rest
+        self checkSize: seg
         seg kind =:= #text
           ifTrue: [
             nodes := nodes addFirst: (TextNode new: #{#text => seg text})
@@ -450,6 +451,26 @@ typed Object subclass: Parser
   /// Deepest allowed nesting of `if` / `unless` / `for` blocks. The parser
   /// is recursive, so the limit bounds its stack use on hostile input.
   class maxDepth -> Integer => 100
+
+  /// Most tokens allowed in one `{{ }}` or `{% %}` markup. Expression parsing
+  /// recurses per `and` / `or`, per `[` subscript and per filter, so bounding
+  /// the token count bounds that recursion.
+  class maxTokens -> Integer => 1000
+
+  /// Abort the whole parse when a single markup is longer than `maxTokens`.
+  class checkSize: seg :: Segment -> Nil =>
+    seg tokens size > self maxTokens
+      ifTrue: [
+        msg := "Expression too long (limit {self maxTokens} tokens)"
+        Error
+          signal: msg
+          reason: (LiquidError
+            kind: #limit
+            line: seg line
+            column: seg column
+            detail: msg)
+      ]
+    nil
 
   /// Abort the whole parse when a block opens deeper than `maxDepth`.
   class checkDepth: depth :: Integer at: seg :: Segment -> Nil =>

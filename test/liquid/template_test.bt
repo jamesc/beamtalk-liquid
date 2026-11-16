@@ -299,3 +299,37 @@ TestCase subclass: TemplateTest
   testSiblingsDoNotAccumulateDepth =>
     src := (("\{% if a %}x\{% endif %}") repeat: 500)
     self assert: (Liquid parse: src) isOk
+
+  // ---- expression size limit (review blocker on PR #2)
+  testLongAndChainWithinLimitParsesAndRenders =>
+    src := "\{% if a" ++ (" and a" repeat: 300) ++ " %}yes\{% endif %}"
+    self assert: (TemplateTest text: src vars: #{"a" => true}) equals: "yes"
+
+  testHugeAndChainIsALimitError =>
+    src := "ab\n\{% if a" ++ (" and a" repeat: 20000) ++ " %}yes\{% endif %}"
+    e := TemplateTest parseError: src
+    self assert: e kind equals: #limit
+    self assert: e line equals: 2
+    self assert: e column equals: 1
+    self assert: e detail equals: "Expression too long (limit 1000 tokens)"
+    self assert: e count equals: 1
+
+  testDeeplyNestedBracketsAreALimitError =>
+    src := "\{\{ " ++ ("a[" repeat: 20000) ++ "a" ++ ("]" repeat: 20000) ++ " }}"
+    self assert: (TemplateTest parseError: src) kind equals: #limit
+
+  testHugeForHeaderIsALimitError =>
+    src := "\{% for x in "
+      ++ ("a[" repeat: 20000)
+      ++ "a"
+      ++ ("]" repeat: 20000)
+      ++ " %}\{% endfor %}"
+    self assert: (TemplateTest parseError: src) kind equals: #limit
+
+  testHugeFilterChainIsALimitError =>
+    src := "\{\{ a" ++ (" | upcase" repeat: 20000) ++ " }}"
+    self assert: (TemplateTest parseError: src) kind equals: #limit
+
+  testOrdinaryMarkupIsNotAffected =>
+    self assert: (Parser maxTokens >= 1000)
+    self assert: (Liquid parse: "\{\{ issue.title | truncate: 20, ""..."" | upcase }}") isOk
