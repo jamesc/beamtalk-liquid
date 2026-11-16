@@ -1,0 +1,637 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Lexer — splits a template into Segments (text, `{{ }}` and `{% %}`).
+///
+/// Works on Unicode codepoints, so every line/column it reports counts
+/// codepoints, not bytes. A Lexer value is one step of an immutable state
+/// machine; use `Lexer tokenize:` rather than building one.
+///
+/// Whitespace control is applied here: a `-` after an opener trims the
+/// whitespace at the end of the preceding text, and a `-` before a closer
+/// trims the whitespace at the start of the following text (including
+/// newlines). `{% raw %}` and `{% comment %}` bodies are scanned without
+/// being lexed, so nothing inside them can fail.
+typed Value subclass: Lexer
+  field: cps :: List = #()
+  field: line :: Integer = 1
+  field: column :: Integer = 1
+  field: segments :: List = #()
+  field: errors :: List = #()
+  field: trimNext :: Boolean = false
+
+  // Codepoints used by the scanner.
+  class lbrace -> Integer => 123
+
+  class rbrace -> Integer => 125
+
+  class percent -> Integer => 37
+
+  class dash -> Integer => 45
+
+  class isSpace: c :: Integer -> Boolean =>
+    c =:= 32 or: [c =:= 9 or: [c =:= 10 or: [c =:= 13]]]
+
+  class isDigit: c :: Integer -> Boolean => c >= 48 and: [c <= 57]
+
+  class isIdentStart: c :: Integer -> Boolean =>
+    (c >= 97 and: [c <= 122]) or: [(c >= 65 and: [c <= 90]) or: [c =:= 95]]
+
+  class isIdentChar: c :: Integer -> Boolean =>
+    (self isIdentStart: c) or: [(self isDigit: c) or: [c =:= 63 or: [c =:= 45]]]
+
+  /// Second element of a codepoint list, or 0.
+  class second: cps :: List -> Integer =>
+    cps size < 2 ifTrue: [0] ifFalse: [cps rest first]
+
+  class third: cps :: List -> Integer =>
+    cps size < 3 ifTrue: [0] ifFalse: [cps rest rest first]
+
+  /// Line/column after moving over `consumed` codepoints.
+  class advance: consumed :: List line: l :: Integer column: c :: Integer -> Tuple =>
+    line := l
+    col := c
+    consumed
+      do: [:ch :: Integer |
+        ch =:= 10
+          ifTrue: [
+            line := line + 1
+            col := 1
+          ]
+          ifFalse: [col := col + 1]
+      ]
+    {line, col}
+
+  /// Strip leading whitespace codepoints.
+  class trimLeading: cps :: List -> List =>
+    cps dropWhile: [:c :: Integer | self isSpace: c]
+
+  /// Strip trailing whitespace codepoints.
+  class trimTrailing: cps :: List -> List =>
+    (self trimLeading: cps reversed) reversed
+
+  class textOf: cps :: List -> String => String fromCodePoints: cps
+
+  /// Entry point. Returns `{segments, errors}`, both in source order.
+  class tokenize: source :: String -> Tuple =>
+    state := Lexer new: #{#cps => source asCharlist}
+    [state cps isEmpty] whileFalse: [state := state step]
+    {state segments reversed, state errors reversed}
+
+  /// Lex the inside of a markup up to its closer. `input` starts just after
+  /// the opener (and optional `-`). Returns
+  /// `{status, tokensOrError, rest, line, column, trimRight}`.
+  class scanTokens: input :: List line: l :: Integer column: c :: Integer closer: closer :: Integer openLine: ol :: Integer openColumn: oc :: Integer -> Tuple =>
+    cps := input
+    line := l
+    col := c
+    tokens := #()
+    status := nil
+    payload := nil
+    trimRight := false
+    [status isNil]
+      whileTrue: [
+        cps isEmpty
+          ifTrue: [
+            status := #error
+            payload := LiquidError
+              kind: #lex
+              line: ol
+              column: oc
+              detail: "Tag or Object not properly terminated"
+          ]
+          ifFalse: [
+            ch := cps first
+            nxt := self second: cps
+            thr := self third: cps
+            (self isSpace: ch)
+              ifTrue: [
+                ch =:= 10
+                  ifTrue: [
+                    line := line + 1
+                    col := 1
+                  ]
+                  ifFalse: [col := col + 1]
+                cps := cps rest
+              ]
+              ifFalse: [
+                (ch =:= closer and: [nxt =:= Lexer rbrace])
+                  ifTrue: [
+                    status := #ok
+                    payload := tokens reversed
+                    cps := cps rest rest
+                    col := col + 2
+                  ]
+                  ifFalse: [
+                    (ch =:= Lexer dash and: [
+                      nxt =:= closer and: [thr =:= Lexer rbrace]
+                    ])
+                      ifTrue: [
+                        status := #ok
+                        payload := tokens reversed
+                        trimRight := true
+                        cps := cps rest rest rest
+                        col := col + 3
+                      ]
+                      ifFalse: [
+                        (ch =:= 34 or: [ch =:= 39])
+                          ifTrue: [
+                            {tok, rest2, l2, c2} := self
+                              scanString: cps
+                              line: line
+                              column: col
+                            tok isNil
+                              ifTrue: [
+                                status := #error
+                                payload := LiquidError
+                                  kind: #lex
+                                  line: line
+                                  column: col
+                                  detail: "String with {self quoteName: ch} not terminated"
+                                cps := #()
+                                line := l2
+                                col := c2
+                              ]
+                              ifFalse: [
+                                tokens := tokens addFirst: tok
+                                cps := rest2
+                                line := l2
+                                col := c2
+                              ]
+                          ]
+                          ifFalse: [
+                            ((self isDigit: ch) or: [
+                              ch =:= Lexer dash and: [self isDigit: nxt]
+                            ])
+                              ifTrue: [
+                                {tok2, rest3, c3} := self
+                                  scanNumber: cps
+                                  line: line
+                                  column: col
+                                tokens := tokens addFirst: tok2
+                                cps := rest3
+                                col := c3
+                              ]
+                              ifFalse: [
+                                (self isIdentStart: ch)
+                                  ifTrue: [
+                                    {tok3, rest4, c4} := self
+                                      scanIdent: cps
+                                      line: line
+                                      column: col
+                                      closer: closer
+                                    tokens := tokens addFirst: tok3
+                                    cps := rest4
+                                    col := c4
+                                  ]
+                                  ifFalse: [
+                                    {op, width} := self operatorAt: ch next: nxt
+                                    op isNil
+                                      ifTrue: [
+                                        status := #error
+                                        payload := LiquidError
+                                          kind: #lex
+                                          line: line
+                                          column: col
+                                          detail: "Unexpected character '{String fromCodePoint: ch}'"
+                                        {cps, line, col} := self
+                                          skipPast: cps
+                                          closer: closer
+                                          line: line
+                                          column: col
+                                      ]
+                                      ifFalse: [
+                                        tokens := tokens addFirst: (Token new: #{
+                                          #kind => #op,
+                                          #value => op,
+                                          #line => line,
+                                          #column => col
+                                        })
+                                        cps := cps drop: width
+                                        col := col + width
+                                      ]
+                                  ]
+                              ]
+                          ]
+                      ]
+                  ]
+              ]
+          ]
+      ]
+    {status, payload, cps, line, col, trimRight}
+
+  class quoteName: ch :: Integer -> String => String fromCodePoint: ch
+
+  /// Operator or punctuation at the head, as `{text, width}` (`{nil, 0}` if none).
+  class operatorAt: ch :: Integer next: nxt :: Integer -> Tuple =>
+    ch =:= 61 ifTrue: [^nxt =:= 61 ifTrue: [{"==", 2}] ifFalse: [{nil, 0}]]
+    ch =:= 33 ifTrue: [^nxt =:= 61 ifTrue: [{"!=", 2}] ifFalse: [{nil, 0}]]
+    ch =:= 60
+      ifTrue: [
+        nxt =:= 61 ifTrue: [^{"<=", 2}]
+        nxt =:= 62 ifTrue: [^{"<>", 2}]
+        ^{"<", 1}
+      ]
+    ch =:= 62 ifTrue: [^nxt =:= 61 ifTrue: [{">=", 2}] ifFalse: [{">", 1}]]
+    ch =:= 46 ifTrue: [^{".", 1}]
+    ch =:= 91 ifTrue: [^{"[", 1}]
+    ch =:= 93 ifTrue: [^{"]", 1}]
+    ch =:= 124 ifTrue: [^{"|", 1}]
+    ch =:= 58 ifTrue: [^{":", 1}]
+    ch =:= 44 ifTrue: [^{",", 1}]
+    ch =:= 40 ifTrue: [^{"(", 1}]
+    ch =:= 41 ifTrue: [^{")", 1}]
+    {nil, 0}
+
+  /// After a lex error, skip to just past the next closer so lexing can go on.
+  class skipPast: input :: List closer: closer :: Integer line: l :: Integer column: c :: Integer -> Tuple =>
+    cps := input
+    line := l
+    col := c
+    done := false
+    [done or: [cps isEmpty]]
+      whileFalse: [
+        ch := cps first
+        (ch =:= closer and: [(self second: cps) =:= Lexer rbrace])
+          ifTrue: [
+            cps := cps rest rest
+            col := col + 2
+            done := true
+          ]
+          ifFalse: [
+            ch =:= 10
+              ifTrue: [
+                line := line + 1
+                col := 1
+              ]
+              ifFalse: [col := col + 1]
+            cps := cps rest
+          ]
+      ]
+    {cps, line, col}
+
+  /// Quoted string, no escapes. Returns `{token | nil, rest, line, column}`.
+  class scanString: input :: List line: l :: Integer column: c :: Integer -> Tuple =>
+    quote := input first
+    cps := input rest
+    line := l
+    col := c + 1
+    acc := #()
+    closed := false
+    [closed or: [cps isEmpty]]
+      whileFalse: [
+        ch := cps first
+        ch =:= quote
+          ifTrue: [closed := true]
+          ifFalse: [
+            ch =:= 10
+              ifTrue: [
+                line := line + 1
+                col := 1
+              ]
+              ifFalse: [col := col + 1]
+            acc := acc addFirst: ch
+          ]
+        cps := cps rest
+      ]
+    closed ifFalse: [^{nil, cps, line, col}]
+    tok := Token
+      new: #{
+        #kind => #string,
+        #value => (self textOf: acc reversed),
+        #line => l,
+        #column => c
+      }
+    {tok, cps, line, col + 1}
+
+  /// Integer or float; a float needs a digit after the dot.
+  class scanNumber: input :: List line: l :: Integer column: c :: Integer -> Tuple =>
+    cps := input
+    acc := #()
+    cps first =:= Lexer dash
+      ifTrue: [
+        acc := acc addFirst: cps first
+        cps := cps rest
+      ]
+    [cps isNotEmpty and: [self isDigit: cps first]]
+      whileTrue: [
+        acc := acc addFirst: cps first
+        cps := cps rest
+      ]
+    isFloat := false
+    (cps isNotEmpty and: [
+      cps first =:= 46 and: [self isDigit: (self second: cps)]
+    ])
+      ifTrue: [
+        isFloat := true
+        acc := acc addFirst: 46
+        cps := cps rest
+        [cps isNotEmpty and: [self isDigit: cps first]]
+          whileTrue: [
+            acc := acc addFirst: cps first
+            cps := cps rest
+          ]
+      ]
+    text := self textOf: acc reversed
+    value := isFloat ifTrue: [text asFloat] ifFalse: [text asInteger]
+    tok := Token new: #{
+      #kind => #number,
+      #value => value,
+      #line => l,
+      #column => c
+    }
+    {tok, cps, c + acc size}
+
+  /// Identifier: letters, digits, `_`, `?` and `-` (but not a `-` that starts a closer).
+  class scanIdent: input :: List line: l :: Integer column: c :: Integer closer: closer :: Integer -> Tuple =>
+    cps := input
+    acc := #()
+    stop := false
+    [stop or: [cps isEmpty]]
+      whileFalse: [
+        ch := cps first
+        endsHere := ch =:= Lexer dash and: [
+          (self second: cps) =:= closer and: [
+            (self third: cps) =:= Lexer rbrace
+          ]
+        ]
+        ((self isIdentChar: ch) and: [endsHere not])
+          ifTrue: [
+            acc := acc addFirst: ch
+            cps := cps rest
+          ]
+          ifFalse: [stop := true]
+      ]
+    tok := Token
+      new: #{
+        #kind => #ident,
+        #value => (self textOf: acc reversed),
+        #line => l,
+        #column => c
+      }
+    {tok, cps, c + acc size}
+
+  /// Consume one text run or one markup.
+  step -> Lexer =>
+    c := self.cps first
+    nxt := Lexer second: self.cps
+    opens := c =:= Lexer lbrace and: [
+      nxt =:= Lexer lbrace or: [nxt =:= Lexer percent]
+    ]
+    opens ifTrue: [self scanMarkup] ifFalse: [self scanText]
+
+  /// Consume literal text up to the next opener.
+  scanText -> Lexer =>
+    acc := #()
+    rest := self.cps
+    stop := false
+    [stop or: [rest isEmpty]]
+      whileFalse: [
+        ch := rest first
+        nxt := Lexer second: rest
+        (ch =:= Lexer lbrace and: [
+          nxt =:= Lexer lbrace or: [nxt =:= Lexer percent]
+        ])
+          ifTrue: [stop := true]
+          ifFalse: [
+            acc := acc addFirst: ch
+            rest := rest rest
+          ]
+      ]
+    consumed := acc reversed
+    {l, c} := Lexer
+      advance: consumed
+      line: self.line
+      column: self.column
+    kept := self.trimNext ifTrue: [
+      Lexer trimLeading: consumed
+    ] ifFalse: [consumed]
+    segs := kept isEmpty
+      ifTrue: [self.segments]
+      ifFalse: [
+        self.segments
+          addFirst: (Segment
+            new: #{
+              #kind => #text,
+              #text => (Lexer textOf: kept),
+              #line => self.line,
+              #column => self.column
+            })
+      ]
+    self update: #{
+      #cps => rest,
+      #line => l,
+      #column => c,
+      #segments => segs,
+      #trimNext => false
+    }
+
+  /// A copy with the given slots replaced (`changes` is keyed by slot name).
+  update: changes :: Dictionary -> Lexer =>
+    Lexer
+      new: #{
+        #cps => (changes at: #cps ifAbsent: [self.cps]),
+        #line => (changes at: #line ifAbsent: [self.line]),
+        #column => (changes at: #column ifAbsent: [self.column]),
+        #segments => (changes at: #segments ifAbsent: [self.segments]),
+        #errors => (changes at: #errors ifAbsent: [self.errors]),
+        #trimNext => (changes at: #trimNext ifAbsent: [self.trimNext])
+      }
+
+  /// Drop trailing whitespace of the most recent text segment.
+  trimPrevious: segs :: List -> List =>
+    segs isEmpty ifTrue: [^segs]
+    last := segs first
+    last kind =:= #text ifFalse: [^segs]
+    trimmed := Lexer textOf: (Lexer trimTrailing: last text asCharlist)
+    trimmed isEmpty ifTrue: [
+      segs rest
+    ] ifFalse: [segs rest addFirst: (last withText: trimmed)]
+
+  /// Consume a `{{ }}` or `{% %}` markup (and the body of raw / comment).
+  scanMarkup -> Lexer =>
+    isTag := (Lexer second: self.cps) =:= Lexer percent
+    closer := isTag ifTrue: [Lexer percent] ifFalse: [Lexer rbrace]
+    afterOpen := self.cps rest rest
+    trimLeft := afterOpen isNotEmpty and: [afterOpen first =:= Lexer dash]
+    body := trimLeft ifTrue: [afterOpen rest] ifFalse: [afterOpen]
+    headLen := trimLeft ifTrue: [3] ifFalse: [2]
+    {l, c} := Lexer
+      advance: (self.cps take: headLen)
+      line: self.line
+      column: self.column
+    {status, payload, rest, el, ec, trimRight} := Lexer
+      scanTokens: body
+      line: l
+      column: c
+      closer: closer
+      openLine: self.line
+      openColumn: self.column
+    segs0 := trimLeft ifTrue: [
+      self trimPrevious: self.segments
+    ] ifFalse: [self.segments]
+    status =:= #error
+      ifTrue: [
+        ^self
+          update: #{
+            #cps => rest,
+            #line => el,
+            #column => ec,
+            #segments => segs0,
+            #errors => (self.errors addFirst: payload),
+            #trimNext => false
+          }
+      ]
+    seg := Segment
+      new: #{
+        #kind => (isTag ifTrue: [#tag] ifFalse: [#output]),
+        #tokens => payload,
+        #line => self.line,
+        #column => self.column
+      }
+    (isTag and: [payload size =:= 1])
+      ifTrue: [
+        name := seg tagName
+        name =:= "raw"
+          ifTrue: [
+            ^self
+              scanBlockBody: "endraw"
+              keep: true
+              opener: seg
+              rest: rest
+              line: el
+              column: ec
+              segments: segs0
+              trimRight: trimRight
+          ]
+        name =:= "comment"
+          ifTrue: [
+            ^self
+              scanBlockBody: "endcomment"
+              keep: false
+              opener: seg
+              rest: rest
+              line: el
+              column: ec
+              segments: segs0
+              trimRight: trimRight
+          ]
+      ]
+    self
+      update: #{
+        #cps => rest,
+        #line => el,
+        #column => ec,
+        #segments => (segs0 addFirst: seg),
+        #trimNext => trimRight
+      }
+
+  /// Scan forward for `{% endX %}`, treating everything before it as opaque
+  /// text. Used by `raw` (body kept) and `comment` (body dropped).
+  scanBlockBody: endName :: String keep: keep :: Boolean opener: opener :: Segment rest: input :: List line: l :: Integer column: c :: Integer segments: segs0 :: List trimRight: openTrimRight :: Boolean -> Lexer =>
+    rest := input
+    line := l
+    col := c
+    acc := #()
+    found := false
+    closeTrimLeft := false
+    closeTrimRight := false
+    failed := false
+    [found or: [failed]]
+      whileFalse: [
+        rest isEmpty
+          ifTrue: [failed := true]
+          ifFalse: [
+            ch := rest first
+            isOpen := ch =:= Lexer lbrace and: [
+              (Lexer second: rest) =:= Lexer percent
+            ]
+            isOpen
+              ifTrue: [
+                after := rest rest rest
+                tl := after isNotEmpty and: [after first =:= Lexer dash]
+                inner := tl ifTrue: [after rest] ifFalse: [after]
+                {st, toks, rest2, el, ec, tr} := Lexer
+                  scanTokens: inner
+                  line: line
+                  column: col
+                  closer: Lexer percent
+                  openLine: line
+                  openColumn: col
+                matches := st =:= #ok and: [
+                  toks size =:= 1 and: [toks first isIdent: endName]
+                ]
+                matches
+                  ifTrue: [
+                    found := true
+                    closeTrimLeft := tl
+                    closeTrimRight := tr
+                    rest := rest2
+                    line := el
+                    col := ec
+                  ]
+                  ifFalse: [
+                    col := col + 1
+                    acc := acc addFirst: ch
+                    rest := rest rest
+                  ]
+              ]
+              ifFalse: [
+                ch =:= 10
+                  ifTrue: [
+                    line := line + 1
+                    col := 1
+                  ]
+                  ifFalse: [col := col + 1]
+                acc := acc addFirst: ch
+                rest := rest rest
+              ]
+          ]
+      ]
+    failed
+      ifTrue: [
+        msg := endName =:= "endraw" ifTrue: [
+          "Raw tag not terminated"
+        ] ifFalse: ["Comment tag not terminated"]
+        err := LiquidError
+          kind: #unclosed
+          line: opener line
+          column: opener column
+          detail: msg
+        ^self
+          update: #{
+            #cps => #(),
+            #line => line,
+            #column => col,
+            #segments => segs0,
+            #errors => (self.errors addFirst: err),
+            #trimNext => false
+          }
+      ]
+    bodyCps := acc reversed
+    bodyCps := openTrimRight ifTrue: [
+      Lexer trimLeading: bodyCps
+    ] ifFalse: [bodyCps]
+    bodyCps := closeTrimLeft ifTrue: [
+      Lexer trimTrailing: bodyCps
+    ] ifFalse: [bodyCps]
+    segs1 := (keep and: [bodyCps isNotEmpty])
+      ifTrue: [
+        segs0
+          addFirst: (Segment
+            new: #{
+              #kind => #text,
+              #text => (Lexer textOf: bodyCps),
+              #line => opener line,
+              #column => opener column
+            })
+      ]
+      ifFalse: [segs0]
+    self
+      update: #{
+        #cps => rest,
+        #line => line,
+        #column => col,
+        #segments => segs1,
+        #trimNext => closeTrimRight
+      }

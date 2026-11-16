@@ -1,0 +1,203 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Filter semantics follow Solid's standard_filter.ex (read verbatim from
+/// github.com/edgurgel/solid, lib/solid/standard_filter.ex).
+TestCase subclass: FiltersTest
+
+  // ---- helpers
+
+  /// The rendered text, or the error message if parse or render failed.
+  class text: source :: String vars: vars :: Dictionary -> String =>
+    (self run: source vars: vars) ifOk: [:t |
+      t
+    ] ifError: [:e | "ERROR " ++ e message]
+
+  class run: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t | t render: vars]
+
+  class strict: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t |
+      t render: vars options: #{#strictVariables => true}
+    ]
+
+  class parseError: source :: String -> LiquidError =>
+    (Liquid parse: source) error
+
+  /// `{{ x | <filter> }}` with `x` bound.
+  class f: filter :: String x: x :: Object | Nil -> String =>
+    self text: "\{\{ x | " ++ filter ++ " }}" vars: #{"x" => x}
+
+  // ---- default (nil, false, "", [], {} are replaced; 0 is kept)
+  testDefaultReplacesEmptyValues =>
+    self assert: (FiltersTest f: "default: ""d""" x: nil) equals: "d"
+    self assert: (FiltersTest f: "default: ""d""" x: false) equals: "d"
+    self assert: (FiltersTest f: "default: ""d""" x: "") equals: "d"
+    self assert: (FiltersTest f: "default: ""d""" x: #()) equals: "d"
+    self assert: (FiltersTest f: "default: ""d""" x: #{}) equals: "d"
+
+  testDefaultKeepsPresentValues =>
+    self assert: (FiltersTest f: "default: ""d""" x: "v") equals: "v"
+    self assert: (FiltersTest f: "default: ""d""" x: 0) equals: "0"
+    self assert: (FiltersTest f: "default: ""d""" x: true) equals: "true"
+    self assert: (FiltersTest f: "default: 456" x: 123) equals: "123"
+    self assert: (FiltersTest f: "default: 456" x: nil) equals: "456"
+
+  testDefaultWithoutArgumentIsEmptyString =>
+    self assert: (FiltersTest f: "default" x: nil) equals: ""
+    self assert: (FiltersTest f: "default" x: "v") equals: "v"
+
+  testDefaultOnUndefinedVariable =>
+    self assert: (FiltersTest text: "\{\{ nope | default: ""fallback"" }}" vars: #{}) equals: "fallback"
+
+  testDefaultOnUndefinedVariableIsNotAStrictError =>
+    r := FiltersTest strict: "\{\{ nope | default: ""fallback"" }}" vars: #{}
+    self assert: r isError
+
+  // ---- case
+  testUpcase =>
+    self assert: (FiltersTest f: "upcase" x: "hello World") equals: "HELLO WORLD"
+    self assert: (FiltersTest f: "upcase" x: nil) equals: ""
+    self assert: (FiltersTest f: "upcase" x: 12) equals: "12"
+
+  testDowncase =>
+    self assert: (FiltersTest f: "downcase" x: "Hello WORLD") equals: "hello world"
+
+  testCaseHandlesUnicode =>
+    self assert: (FiltersTest f: "upcase" x: "straße é") equals: "STRASSE É"
+
+  // ---- strip
+  testStrip =>
+    self assert: (FiltersTest f: "strip" x: "  \n hi there \t ") equals: "hi there"
+    self assert: (FiltersTest f: "strip" x: nil) equals: ""
+
+  // ---- truncate
+  testTruncateDefaultsTo50 =>
+    long := "abcdefghij" repeat: 6
+    out := FiltersTest f: "truncate" x: long
+    self assert: out size equals: 50
+    self assert: (out endsWith: "...")
+
+  testTruncateShortStringUnchanged =>
+    self assert: (FiltersTest f: "truncate: 20" x: "short") equals: "short"
+    self assert: (FiltersTest f: "truncate: 5" x: "exact") equals: "exact"
+
+  testTruncateEllipsisCountsAgainstLength =>
+    self assert: (FiltersTest f: "truncate: 10" x: "Ground control to Major Tom.") equals: "Ground ..."
+
+  testTruncateCustomEllipsis =>
+    self assert: (FiltersTest f: "truncate: 25, "", and so on""" x: "Ground control to Major Tom.") equals: "Ground control, and so on"
+
+  testTruncateNoEllipsis =>
+    self assert: (FiltersTest f: "truncate: 20, """"" x: "Ground control to Major Tom.") equals: "Ground control to Ma"
+
+  testTruncateShorterThanEllipsis =>
+    self assert: (FiltersTest f: "truncate: 2" x: "abcdef") equals: "..."
+
+  testTruncateCountsCharactersNotBytes =>
+    self assert: (FiltersTest f: "truncate: 5, ""…""" x: "日本語日本語日本語") equals: "日本語日…"
+
+  testTruncateRejectsNonIntegerLength =>
+    r := FiltersTest run: "\{\{ x | truncate: ""a"" }}" vars: #{"x" => "hello"}
+    self assert: r isError
+    self assert: r error kind equals: #render
+
+  // ---- join
+  testJoin =>
+    self assert: (FiltersTest f: "join: "", """ x: #("a", "b", "c")) equals: "a, b, c"
+    self assert: (FiltersTest f: "join" x: #("a", "b")) equals: "a b"
+    self assert: (FiltersTest f: "join: ""-""" x: #(1, 2, 3)) equals: "1-2-3"
+    self assert: (FiltersTest f: "join: 5" x: #("a", "b", "c")) equals: "a5b5c"
+
+  testJoinNonListIsSingleItem =>
+    self assert: (FiltersTest f: "join: ""-""" x: 5) equals: "5"
+    self assert: (FiltersTest f: "join: ""-""" x: nil) equals: ""
+
+  testJoinFlattensNestedLists =>
+    self assert: (FiltersTest f: "join: ""-""" x: #(#(1, 2), 3)) equals: "1-2-3"
+
+  // ---- size
+  testSize =>
+    self assert: (FiltersTest f: "size" x: "hello") equals: "5"
+    self assert: (FiltersTest f: "size" x: #(1, 2, 3)) equals: "3"
+    self assert: (FiltersTest f: "size" x: #{"a" => 1, "b" => 2}) equals: "2"
+    self assert: (FiltersTest f: "size" x: nil) equals: "0"
+    self assert: (FiltersTest f: "size" x: 12345) equals: "0"
+
+  testSizeCountsCharacters =>
+    self assert: (FiltersTest f: "size" x: "日本語") equals: "3"
+
+  // ---- first / last
+  testFirstAndLastOfList =>
+    self assert: (FiltersTest f: "first" x: #(1, 2, 3)) equals: "1"
+    self assert: (FiltersTest f: "last" x: #(1, 2, 3)) equals: "3"
+    self assert: (FiltersTest f: "first" x: #()) equals: ""
+    self assert: (FiltersTest f: "last" x: #()) equals: ""
+
+  testFirstAndLastOfString =>
+    self assert: (FiltersTest f: "first" x: "abc") equals: "a"
+    self assert: (FiltersTest f: "last" x: "abc") equals: "c"
+    self assert: (FiltersTest f: "first" x: "") equals: ""
+
+  testFirstAndLastOfOtherTypesAreNil =>
+    self assert: (FiltersTest f: "first" x: 5) equals: ""
+    self assert: (FiltersTest f: "last" x: nil) equals: ""
+
+  // ---- escape
+  testEscape =>
+    self assert: (FiltersTest f: "escape" x: "<a href=""x"">Tom & 'Jerry'</a>") equals: "&lt;a href=&quot;x&quot;&gt;Tom &amp; &#39;Jerry&#39;&lt;/a&gt;"
+
+  testEscapeSolidDocExample =>
+    self assert: (FiltersTest f: "escape" x: "Have you read 'James & the Giant Peach'?") equals: "Have you read &#39;James &amp; the Giant Peach&#39;?"
+
+  testEscapeDoesNotDoubleEscapeItsOwnOutputWithinOneCall =>
+    self assert: (FiltersTest f: "escape" x: "&lt;") equals: "&amp;lt;"
+
+  // ---- chaining and syntax
+  testFiltersApplyLeftToRight =>
+    self
+      assert: (FiltersTest text: "\{\{ x | strip | upcase | truncate: 4, """" }}" vars: #{
+        "x" => "  hello  "
+      })
+      equals: "HELL"
+
+  testValueIsFirstArgument =>
+    self assert: (FiltersTest text: "\{\{ xs | join: ""+"" | size }}" vars: #{
+      "xs" => #(10, 20)
+    }) equals: "5"
+
+  testFilterOnLiteral =>
+    self assert: (FiltersTest text: "\{\{ ""abc"" | upcase }}" vars: #{}) equals: "ABC"
+
+  testFilterArgumentCanBeAVariable =>
+    self
+      assert: (FiltersTest text: "\{\{ xs | join: sep }}" vars: #{
+        "xs" => #(1, 2),
+        "sep" => "/"
+      })
+      equals: "1/2"
+
+  testBarePipeIsParseError =>
+    e := FiltersTest parseError: "\{\{ x | }}"
+    self assert: e detail equals: "Filter expected"
+    self assert: e kind equals: #parse
+
+  testColonWithNoArgumentsIsParseError =>
+    e := FiltersTest parseError: "\{\{ x | truncate: }}"
+    self assert: e detail equals: "Arguments expected"
+
+  testColonBeforePipeIsParseError =>
+    self assert: (FiltersTest parseError: "\{\{ x | truncate: | upcase }}") detail equals: "Arguments expected"
+
+  testUnknownFilterIsError =>
+    e := FiltersTest parseError: "\{\{ x | frobnicate }}"
+    self assert: e kind equals: #unknown_filter
+    self assert: e detail equals: "Unknown filter 'frobnicate'"
+    self assert: e column equals: 8
+
+  testWrongArityIsParseError =>
+    e := FiltersTest parseError: "\{\{ x | upcase: 1 }}"
+    self assert: (e detail includesSubstring: "Wrong number of arguments")
+
+  testFilterNamesAreNotSpecialInConditions =>
+    self assert: (FiltersTest parseError: "\{% if x | size %}y\{% endif %}") kind equals: #parse

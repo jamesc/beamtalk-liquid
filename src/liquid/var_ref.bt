@@ -1,0 +1,45 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// VarRef — a variable path such as `issue.labels[0]`.
+///
+/// `parts` are expressions: the first is a Literal naming the root variable,
+/// the rest are the subscripts (Literal strings for `.name`, any expression
+/// for `[expr]`). `text` is the path as written, for error messages.
+typed Expr subclass: VarRef
+  field: parts :: List = #()
+  field: text :: String = ""
+  field: line :: Integer = 1
+  field: column :: Integer = 1
+
+  /// Evaluate: `{value, errors}`. A path that does not exist is `nil`; in
+  /// strict mode it is also recorded as an `#undefined_variable` error.
+  eval: scope :: Scope -> Tuple =>
+    current := scope vars
+    defined := true
+    errs := #()
+    index := 0
+    self.parts
+      do: [:part :: Expr |
+        defined
+          ifTrue: [
+            {key, partErrs} := part eval: scope
+            errs := errs ++ partErrs
+            {found, value} := (index =:= 0) ifTrue: [
+              Renderer lookup: scope vars key: key
+            ] ifFalse: [Renderer lookup: current key: key]
+            found ifTrue: [current := value] ifFalse: [defined := false]
+          ]
+        index := index + 1
+      ]
+    defined ifTrue: [^{current, errs}]
+    scope strict
+      ifTrue: [
+        errs := errs
+          ++ #(LiquidError
+            kind: #undefined_variable
+            line: self.line
+            column: self.column
+            detail: "Undefined variable: {self.text}")
+      ]
+    {nil, errs}

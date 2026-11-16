@@ -1,0 +1,9 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Literal — a constant expression: string, number, `true`, `false`, `nil`.
+typed Expr subclass: Literal
+  field: value :: Object | Nil = nil
+
+  /// Evaluate: `{value, errors}`.
+  eval: _scope :: Scope -> Tuple => {self.value, #()}

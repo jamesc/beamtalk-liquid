@@ -1,0 +1,20 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Token — one lexical unit inside a `{{ }}` or `{% %}` markup.
+///
+/// `kind` is `#ident`, `#number`, `#string`, `#op` (comparison operators and
+/// punctuation: `== != <> < > <= >= . [ ] | : , ( )`). `value` is the
+/// identifier text, the number, the string contents (no escapes) or the
+/// operator text.
+typed Value subclass: Token
+  field: kind :: Symbol = #ident
+  field: value :: Object | Nil = nil
+  field: line :: Integer = 1
+  field: column :: Integer = 1
+
+  isOp: text :: String -> Boolean =>
+    self.kind =:= #op and: [self.value =:= text]
+
+  isIdent: text :: String -> Boolean =>
+    self.kind =:= #ident and: [self.value =:= text]

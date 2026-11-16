@@ -1,0 +1,228 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Condition semantics, confirmed against Solid's BinaryCondition and
+/// UnaryCondition (BT-4157 follow-up).
+TestCase subclass: ConditionsTest
+
+  // ---- helpers
+
+  /// The rendered text, or the error message if parse or render failed.
+  class text: source :: String vars: vars :: Dictionary -> String =>
+    (self run: source vars: vars) ifOk: [:t |
+      t
+    ] ifError: [:e | "ERROR " ++ e message]
+
+  class run: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t | t render: vars]
+
+  class strict: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t |
+      t render: vars options: #{#strictVariables => true}
+    ]
+
+  class parseError: source :: String -> LiquidError =>
+    (Liquid parse: source) error
+
+  /// "T" or "F" for `{% if cond %}T{% else %}F{% endif %}`.
+  class eval: cond :: String vars: vars :: Dictionary -> String =>
+    ConditionsTest text: "\{% if " ++ cond ++ " %}T\{% else %}F\{% endif %}" vars: vars
+
+  // ---- truthiness (written from the Liquid spec): only nil and false are falsy
+  testTruthiness =>
+    self assert: (ConditionsTest eval: "x" vars: #{"x" => nil}) equals: "F"
+    self assert: (ConditionsTest eval: "x" vars: #{"x" => false}) equals: "F"
+    self assert: (ConditionsTest eval: "x" vars: #{"x" => true}) equals: "T"
+    self assert: (ConditionsTest eval: "x" vars: #{"x" => 0}) equals: "T"
+    self assert: (ConditionsTest eval: "x" vars: #{"x" => ""}) equals: "T"
+    self assert: (ConditionsTest eval: "x" vars: #{"x" => #()}) equals: "T"
+    self assert: (ConditionsTest eval: "x" vars: #{"x" => #{}}) equals: "T"
+    self assert: (ConditionsTest eval: "x" vars: #{}) equals: "F"
+
+  testLiteralTruthiness =>
+    self assert: (ConditionsTest eval: "0" vars: #{}) equals: "T"
+    self assert: (ConditionsTest eval: "nil" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "false" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "true" vars: #{}) equals: "T"
+
+  // ---- equality
+  testEquality =>
+    self assert: (ConditionsTest eval: "x == 1" vars: #{"x" => 1}) equals: "T"
+    self assert: (ConditionsTest eval: "x == 1" vars: #{"x" => 2}) equals: "F"
+    self assert: (ConditionsTest eval: "x == ""a""" vars: #{
+      "x" => "a"
+    }) equals: "T"
+    self assert: (ConditionsTest eval: "x != ""a""" vars: #{
+      "x" => "b"
+    }) equals: "T"
+    self assert: (ConditionsTest eval: "x == nil" vars: #{}) equals: "T"
+
+  testLooseEqualityBetweenIntegerAndFloat =>
+    self assert: (ConditionsTest eval: "x == 1.0" vars: #{"x" => 1}) equals: "T"
+
+  testNotEqualAliases =>
+    self assert: (ConditionsTest eval: "x <> 1" vars: #{"x" => 2}) equals: "T"
+    self assert: (ConditionsTest eval: "x <> 1" vars: #{"x" => 1}) equals: "F"
+    self assert: (ConditionsTest eval: "x != 1" vars: #{"x" => 1}) equals: "F"
+
+  // ---- ordering
+  testOrdering =>
+    self assert: (ConditionsTest eval: "x < 3" vars: #{"x" => 2}) equals: "T"
+    self assert: (ConditionsTest eval: "x <= 2" vars: #{"x" => 2}) equals: "T"
+    self assert: (ConditionsTest eval: "x > 3" vars: #{"x" => 2}) equals: "F"
+    self assert: (ConditionsTest eval: "x >= 3" vars: #{"x" => 3}) equals: "T"
+    self assert: (ConditionsTest eval: "x < 2.5" vars: #{"x" => 2}) equals: "T"
+
+  testStringOrdering =>
+    self assert: (ConditionsTest eval: "x < ""b""" vars: #{
+      "x" => "a"
+    }) equals: "T"
+
+  testNilAgainstNumberIsFalseForOrdering =>
+    self assert: (ConditionsTest eval: "x < 3" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "x <= 3" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "x > 3" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "x >= 3" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "3 > x" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "3 < x" vars: #{}) equals: "F"
+
+  testStringAgainstNumberIsRenderError =>
+    r := ConditionsTest run: "\{% if x < 3 %}T\{% endif %}" vars: #{"x" => "a"}
+    self assert: r isError
+    self assert: r error kind equals: #render
+    self assert: r error detail equals: "comparison of String with 3 failed"
+    r2 := ConditionsTest run: "\{% if 3 < x %}T\{% endif %}" vars: #{"x" => "a"}
+    self assert: r2 error detail equals: "comparison of Integer with String failed"
+    r3 := ConditionsTest run: "\{% if 1.5 < x %}T\{% endif %}" vars: #{
+      "x" => "a"
+    }
+    self assert: r3 error detail equals: "comparison of Float with String failed"
+
+  testRenderErrorCarriesPosition =>
+    r := ConditionsTest run: "ab\n  \{% if x < 3 %}T\{% endif %}" vars: #{
+      "x" => "a"
+    }
+    self assert: r error line equals: 2
+    self assert: r error column equals: 11
+
+  // ---- maps compare false for every operator
+  testMapsCompareFalseForEveryOperator =>
+    vars := #{"m" => #{"a" => 1}, "n" => #{"a" => 1}}
+    self assert: (ConditionsTest eval: "m == n" vars: vars) equals: "F"
+    self assert: (ConditionsTest eval: "m != n" vars: vars) equals: "F"
+    self assert: (ConditionsTest eval: "m <> n" vars: vars) equals: "F"
+    self assert: (ConditionsTest eval: "m < n" vars: vars) equals: "F"
+    self assert: (ConditionsTest eval: "m >= 1" vars: vars) equals: "F"
+    self assert: (ConditionsTest eval: "m contains ""a""" vars: vars) equals: "F"
+    self assert: (ConditionsTest eval: "1 == m" vars: vars) equals: "F"
+
+  // ---- contains
+  testContainsString =>
+    self assert: (ConditionsTest eval: "s contains ""ell""" vars: #{
+      "s" => "hello"
+    }) equals: "T"
+    self assert: (ConditionsTest eval: "s contains ""xyz""" vars: #{
+      "s" => "hello"
+    }) equals: "F"
+
+  testContainsStringWithNonStringRightConvertsToString =>
+    self assert: (ConditionsTest eval: "s contains 42" vars: #{
+      "s" => "abc42def"
+    }) equals: "T"
+    self assert: (ConditionsTest eval: "s contains 7" vars: #{
+      "s" => "abc42def"
+    }) equals: "F"
+
+  testContainsList =>
+    self assert: (ConditionsTest eval: "xs contains 2" vars: #{
+      "xs" => #(1, 2, 3)
+    }) equals: "T"
+    self assert: (ConditionsTest eval: "xs contains 9" vars: #{
+      "xs" => #(1, 2, 3)
+    }) equals: "F"
+    self assert: (ConditionsTest eval: "xs contains ""b""" vars: #{
+      "xs" => #("a", "b")
+    }) equals: "T"
+
+  testContainsNilOnEitherSideIsFalse =>
+    self assert: (ConditionsTest eval: "s contains nil" vars: #{
+      "s" => "abc"
+    }) equals: "F"
+    self assert: (ConditionsTest eval: "missing contains ""a""" vars: #{}) equals: "F"
+    self assert: (ConditionsTest eval: "xs contains nil" vars: #{
+      "xs" => #(1)
+    }) equals: "F"
+
+  testContainsOtherLeftTypeIsFalse =>
+    self assert: (ConditionsTest eval: "n contains 1" vars: #{
+      "n" => 123
+    }) equals: "F"
+    self assert: (ConditionsTest eval: "b contains true" vars: #{
+      "b" => true
+    }) equals: "F"
+
+  // ---- and / or: no precedence, right-associative
+  testAnd =>
+    self assert: (ConditionsTest eval: "a and b" vars: #{
+      "a" => true,
+      "b" => true
+    }) equals: "T"
+    self assert: (ConditionsTest eval: "a and b" vars: #{
+      "a" => true,
+      "b" => false
+    }) equals: "F"
+
+  testOr =>
+    self assert: (ConditionsTest eval: "a or b" vars: #{
+      "a" => false,
+      "b" => true
+    }) equals: "T"
+    self assert: (ConditionsTest eval: "a or b" vars: #{
+      "a" => false,
+      "b" => false
+    }) equals: "F"
+
+  testAndOrAreRightAssociativeWithNoPrecedence =>
+    // a and b or c  ==  a and (b or c)
+    self
+      assert: (ConditionsTest eval: "a and b or c" vars: #{
+        "a" => false,
+        "b" => true,
+        "c" => true
+      })
+      equals: "F"
+    // Left-to-right with and-over-or precedence would give (false and true) or true = true.
+    self
+      assert: (ConditionsTest eval: "a and b or c" vars: #{
+        "a" => true,
+        "b" => false,
+        "c" => true
+      })
+      equals: "T"
+    // a or b and c  ==  a or (b and c)
+    self
+      assert: (ConditionsTest eval: "a or b and c" vars: #{
+        "a" => true,
+        "b" => false,
+        "c" => false
+      })
+      equals: "T"
+    self
+      assert: (ConditionsTest eval: "a or b and c" vars: #{
+        "a" => false,
+        "b" => true,
+        "c" => false
+      })
+      equals: "F"
+
+  testComparisonsInsideAndOr =>
+    vars := #{"n" => 5, "s" => "x"}
+    self assert: (ConditionsTest eval: "n > 3 and s == ""x""" vars: vars) equals: "T"
+    self assert: (ConditionsTest eval: "n > 9 or s == ""x""" vars: vars) equals: "T"
+    self assert: (ConditionsTest eval: "n > 9 or s == ""y""" vars: vars) equals: "F"
+
+  testPathsInConditions =>
+    vars := #{"issue" => #{"labels" => #("bug", "ui"), "priority" => 2}}
+    self assert: (ConditionsTest eval: "issue.labels contains ""bug""" vars: vars) equals: "T"
+    self assert: (ConditionsTest eval: "issue.priority >= 2" vars: vars) equals: "T"
+    self assert: (ConditionsTest eval: "issue.labels.size == 2" vars: vars) equals: "T"

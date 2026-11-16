@@ -3,9 +3,26 @@
 
 /// Liquid — entry point for the liquid template engine.
 ///
-/// Placeholder for BT-4918. The public API will be:
-///   `Liquid parse: source` returning `Result(Template, LiquidError)`.
-Object subclass: Liquid
+///     (Liquid parse: source) andThen: [:t | t render: vars]
+///
+/// `parse:` returns `Result(Template, LiquidError)`; `Template render:`
+/// returns `Result(String, LiquidError)`. See the README for the supported
+/// subset and the divergences from Liquid.
+typed Object subclass: Liquid
 
-  /// Package version, until the parser lands.
-  class version => "0.1.0"
+  /// Package version.
+  class version -> String => "0.1.0"
+
+  /// Parse a template. All lex and parse errors are collected: the
+  /// returned LiquidError describes the first (by position) and
+  /// `errors` lists them all.
+  class parse: source :: String -> Result =>
+    {segs, lexErrs} := Lexer tokenize: source
+    {nodes, parseErrs} := Parser parseAll: segs
+    errs := (lexErrs ++ parseErrs)
+      sort: [:a :: LiquidError :b :: LiquidError |
+        a line < b line or: [a line =:= b line and: [a column <= b column]]
+      ]
+    errs isEmpty ifTrue: [
+      Result ok: (Template new: #{#nodes => nodes})
+    ] ifFalse: [Result error: (LiquidError fromList: errs)]

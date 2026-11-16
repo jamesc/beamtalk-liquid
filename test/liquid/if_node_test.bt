@@ -1,0 +1,126 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: IfNodeTest
+
+  // ---- helpers
+
+  /// The rendered text, or the error message if parse or render failed.
+  class text: source :: String vars: vars :: Dictionary -> String =>
+    (self run: source vars: vars) ifOk: [:t |
+      t
+    ] ifError: [:e | "ERROR " ++ e message]
+
+  class run: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t | t render: vars]
+
+  class strict: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t |
+      t render: vars options: #{#strictVariables => true}
+    ]
+
+  class parseError: source :: String -> LiquidError =>
+    (Liquid parse: source) error
+
+  testIfElse =>
+    src := "\{% if a %}A\{% else %}B\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{"a" => true}) equals: "A"
+    self assert: (IfNodeTest text: src vars: #{"a" => false}) equals: "B"
+
+  testElsifChain =>
+    src := "\{% if n == 1 %}one\{% elsif n == 2 %}two\{% elsif n == 3 %}three\{% else %}many\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{"n" => 1}) equals: "one"
+    self assert: (IfNodeTest text: src vars: #{"n" => 2}) equals: "two"
+    self assert: (IfNodeTest text: src vars: #{"n" => 3}) equals: "three"
+    self assert: (IfNodeTest text: src vars: #{"n" => 4}) equals: "many"
+
+  testFirstMatchingBranchWins =>
+    src := "\{% if a %}1\{% elsif b %}2\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => true,
+      "b" => true
+    }) equals: "1"
+
+  testIfWithoutElseRendersNothing =>
+    self assert: (IfNodeTest text: "x\{% if a %}A\{% endif %}y" vars: #{
+      "a" => false
+    }) equals: "xy"
+
+  testUnless =>
+    src := "\{% unless a %}shown\{% endunless %}"
+    self assert: (IfNodeTest text: src vars: #{"a" => false}) equals: "shown"
+    self assert: (IfNodeTest text: src vars: #{"a" => true}) equals: ""
+
+  testUnlessElse =>
+    src := "\{% unless a %}U\{% else %}E\{% endunless %}"
+    self assert: (IfNodeTest text: src vars: #{"a" => false}) equals: "U"
+    self assert: (IfNodeTest text: src vars: #{"a" => true}) equals: "E"
+
+  testUnlessWithElsifActsAsFallback =>
+    src := "\{% unless a %}U\{% elsif b %}B\{% else %}E\{% endunless %}"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => false,
+      "b" => false
+    }) equals: "U"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => true,
+      "b" => true
+    }) equals: "B"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => true,
+      "b" => false
+    }) equals: "E"
+
+  testExtraElseAfterElseIsIgnored =>
+    src := "\{% if a %}A\{% else %}B\{% else %}C\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{"a" => false}) equals: "B"
+
+  testElsifAfterElseIsIgnored =>
+    src := "\{% if a %}A\{% else %}B\{% elsif b %}C\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => false,
+      "b" => true
+    }) equals: "B"
+
+  // ---- nesting (written from the Liquid spec)
+  testNestedIfElseBranches =>
+    src := "\{% if a %}\{% if b %}AB\{% else %}A\{% endif %}\{% else %}\{% if b %}B\{% else %}-\{% endif %}\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => true,
+      "b" => true
+    }) equals: "AB"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => true,
+      "b" => false
+    }) equals: "A"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => false,
+      "b" => true
+    }) equals: "B"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => false,
+      "b" => false
+    }) equals: "-"
+
+  testUnlessInsideIf =>
+    src := "\{% if a %}\{% unless b %}x\{% endunless %}\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => true,
+      "b" => false
+    }) equals: "x"
+
+  testIfInsideElsif =>
+    src := "\{% if a %}A\{% elsif b %}\{% if c %}BC\{% endif %}\{% endif %}"
+    self assert: (IfNodeTest text: src vars: #{
+      "a" => false,
+      "b" => true,
+      "c" => true
+    }) equals: "BC"
+
+  testConditionTagsAreCaseSensitiveOutputsUnchanged =>
+    self
+      assert: (IfNodeTest text: "\{% if a %}\{\{ b }}\{% endif %}" vars: #{
+        "a" => 1,
+        "b" => "B"
+      })
+      equals: "B"

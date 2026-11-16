@@ -1,0 +1,71 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Renderer — shared rendering helpers: node lists, truthiness, lookup and
+/// value-to-text conversion.
+typed Object subclass: Renderer
+
+  /// Render nodes in order. Returns `{text, errors}`.
+  class renderAll: nodes :: List scope: scope :: Scope -> Tuple =>
+    out := ""
+    errs := #()
+    nodes
+      do: [:node :: AstNode |
+        {text, nodeErrs} := node render: scope
+        out := out ++ text
+        errs := errs ++ nodeErrs
+      ]
+    {out, errs}
+
+  /// Only `nil` and `false` are falsy (`0`, `""` and `#()` are truthy).
+  class truthy: value :: Object | Nil -> Boolean =>
+    (value isNil) not and: [(value =:= false) not]
+
+  /// Convert a value to output text. `nil` is empty; lists concatenate
+  /// their elements; maps use their printString.
+  class stringify: value :: Object | Nil -> String =>
+    value isNil ifTrue: [^""]
+    (value isKindOf: String) ifTrue: [^value]
+    (value isKindOf: List)
+      ifTrue: [
+        ^value inject: "" into: [:acc :: String :each :: Object |
+          acc ++ (self stringify: each)
+        ]
+      ]
+    value displayString
+
+  /// One step of a path lookup. Returns `{found, value}`.
+  ///
+  /// Maps are keyed by strings. Lists take integer indexes (0-based,
+  /// negative counts from the end). `size` works on lists, maps (when there
+  /// is no `size` key) and strings; `first` / `last` work on lists.
+  class lookup: container :: Object | Nil key: key :: Object | Nil -> Tuple =>
+    (container isKindOf: Dictionary)
+      ifTrue: [
+        (key isKindOf: String) ifFalse: [^{false, nil}]
+        (container includesKey: key) ifTrue: [^{true, container at: key}]
+        key =:= "size" ifTrue: [^{true, container size}]
+        ^{false, nil}
+      ]
+    (container isKindOf: List)
+      ifTrue: [
+        (key isKindOf: Integer)
+          ifTrue: [
+            n := container size
+            idx := key < 0 ifTrue: [n + key] ifFalse: [key]
+            (idx >= 0 and: [idx < n]) ifTrue: [^{true, container at: idx + 1}]
+            ^{false, nil}
+          ]
+        key =:= "size" ifTrue: [^{true, container size}]
+        key =:= "first" ifTrue: [
+          ^{true, container isEmpty ifTrue: [nil] ifFalse: [container first]}
+        ]
+        key =:= "last" ifTrue: [
+          ^{true, container isEmpty ifTrue: [nil] ifFalse: [container last]}
+        ]
+        ^{false, nil}
+      ]
+    ((container isKindOf: String) and: [
+      key =:= "size"
+    ]) ifTrue: [^{true, container length}]
+    {false, nil}

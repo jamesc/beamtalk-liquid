@@ -1,0 +1,223 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// `{{ }}` output, text conversion, comment, raw and whitespace control at
+/// render level. Written from the Liquid reference.
+TestCase subclass: OutputTest
+
+  // ---- helpers
+
+  /// The rendered text, or the error message if parse or render failed.
+  class text: source :: String vars: vars :: Dictionary -> String =>
+    (self run: source vars: vars) ifOk: [:t |
+      t
+    ] ifError: [:e | "ERROR " ++ e message]
+
+  class run: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t | t render: vars]
+
+  class strict: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t |
+      t render: vars options: #{#strictVariables => true}
+    ]
+
+  class parseError: source :: String -> LiquidError =>
+    (Liquid parse: source) error
+
+  // ---- values to text
+  testStringsAndNumbers =>
+    self
+      assert: (OutputTest text: "\{\{ s }} \{\{ i }} \{\{ f }}" vars: #{
+        "s" => "a",
+        "i" => 3,
+        "f" => 1.5
+      })
+      equals: "a 3 1.5"
+
+  testNilAndUndefinedRenderEmpty =>
+    self assert: (OutputTest text: "[\{\{ n }}][\{\{ missing }}]" vars: #{
+      "n" => nil
+    }) equals: "[][]"
+
+  testBooleans =>
+    self assert: (OutputTest text: "\{\{ t }} \{\{ f }}" vars: #{
+      "t" => true,
+      "f" => false
+    }) equals: "true false"
+
+  testListsConcatenateElements =>
+    self assert: (OutputTest text: "\{\{ xs }}" vars: #{
+      "xs" => #("a", "b", 1)
+    }) equals: "ab1"
+
+  testLiterals =>
+    self assert: (OutputTest text: "\{\{ 42 }} \{\{ ""s"" }} \{\{ 'q' }} \{\{ true }} \{\{ nil }}." vars: #{}) equals: "42 s q true ."
+
+  testNumbersInPaths =>
+    self
+      assert: (OutputTest text: "\{\{ xs[1] }}\{\{ xs[-1] }}\{\{ xs[9] }}" vars: #{
+        "xs" => #("a", "b", "c")
+      })
+      equals: "bc"
+
+  testPaths =>
+    vars := #{
+      "issue" => #{
+        "title" => "T",
+        "labels" => #("x", "y"),
+        "meta" => #{"id" => 7}
+      }
+    }
+    self assert: (OutputTest text: "\{\{ issue.title }} \{\{ issue.labels[1] }} \{\{ issue.meta.id }} \{\{ issue[""title""] }}" vars: vars) equals: "T y 7 T"
+
+  testBracketSubscriptCanBeAVariable =>
+    self assert: (OutputTest text: "\{\{ m[k] }}" vars: #{
+      "m" => #{"a" => "A"},
+      "k" => "a"
+    }) equals: "A"
+
+  testSizeAndFirstLastOnPaths =>
+    vars := #{"xs" => #(1, 2, 3), "s" => "abcd"}
+    self assert: (OutputTest text: "\{\{ xs.size }} \{\{ xs.first }} \{\{ xs.last }} \{\{ s.size }}" vars: vars) equals: "3 1 3 4"
+
+  testKeyNamedSizeWinsOverBuiltin =>
+    self assert: (OutputTest text: "\{\{ m.size }}" vars: #{
+      "m" => #{"size" => "big"}
+    }) equals: "big"
+
+  testOutputIsNotRescanned =>
+    self assert: (OutputTest text: "\{\{ a }}\{\{ b }}" vars: #{
+      "a" => "\{\{",
+      "b" => "b }}"
+    }) equals: "\{\{b }}"
+
+  testOutputInsideForIsNotRescanned =>
+    self
+      assert: (OutputTest text: "\{% for x in xs %}\{\{ x }}\{% endfor %}" vars: #{
+        "xs" => #("\{% endfor %}", "\{\{ y }}")
+      })
+      equals: "\{% endfor %}\{\{ y }}"
+
+  testUnicodeTextAndValuesPassThrough =>
+    self assert: (OutputTest text: "日本語 \{\{ x }} 😀" vars: #{
+      "x" => "é"
+    }) equals: "日本語 é 😀"
+
+  testPlainTextWithSingleBraces =>
+    self assert: (OutputTest text: "a \{ b } c % d" vars: #{}) equals: "a \{ b } c % d"
+
+  testEmptyTemplate => self assert: (OutputTest text: "" vars: #{}) equals: ""
+
+  // ---- comment
+  testCommentIsSkipped =>
+    self
+      assert: (OutputTest text: "a\{% comment %}hidden \{\{ x }}\{% endcomment %}b" vars: #{
+        "x" => 1
+      })
+      equals: "ab"
+
+  testCommentBodyIsNotParsed =>
+    src := "a\{% comment %}\{% if %}\{% bogus \{\{ ""unterminated \{% endcomment %}b"
+    self assert: (OutputTest text: src vars: #{}) equals: "ab"
+
+  testCommentContainingOtherTagsDoesNotNeedThemClosed =>
+    self assert: (OutputTest text: "\{% comment %}\{% for x in xs %}\{% endcomment %}ok" vars: #{}) equals: "ok"
+
+  testCommentInsideIf =>
+    self
+      assert: (OutputTest text: "\{% if a %}x\{% comment %}c\{% endcomment %}y\{% endif %}" vars: #{
+        "a" => true
+      })
+      equals: "xy"
+
+  testUnterminatedCommentIsErrorWithLineAndColumn =>
+    e := OutputTest parseError: "ab\n  \{% comment %} never closed"
+    self assert: e kind equals: #unclosed
+    self assert: e line equals: 2
+    self assert: e column equals: 3
+    self assert: e detail equals: "Comment tag not terminated"
+
+  // ---- raw
+  testRawIsLiteral =>
+    self
+      assert: (OutputTest text: "\{% raw %}\{\{ x }} \{% if y %}\{% endraw %}" vars: #{
+        "x" => 1
+      })
+      equals: "\{\{ x }} \{% if y %}"
+
+  testRawKeepsWhitespaceAndNewlines =>
+    self assert: (OutputTest text: "\{% raw %}  a\n  b  \{% endraw %}" vars: #{}) equals: "  a\n  b  "
+
+  testRawTrailingTrim =>
+    self assert: (OutputTest text: "\{% raw %}body  \n\{%- endraw %}" vars: #{}) equals: "body"
+
+  testRawLeadingTrim =>
+    self assert: (OutputTest text: "\{% raw -%}  \n body\{% endraw %}" vars: #{}) equals: "body"
+
+  testRawContainingFakeCloserNotMatching =>
+    self assert: (OutputTest text: "\{% raw %}\{% endrawx %}\{% endraw %}" vars: #{}) equals: "\{% endrawx %}"
+
+  testUnterminatedRawIsErrorWithLineAndColumn =>
+    e := OutputTest parseError: "x\n\n   \{% raw %}forever"
+    self assert: e kind equals: #unclosed
+    self assert: e line equals: 3
+    self assert: e column equals: 4
+    self assert: e detail equals: "Raw tag not terminated"
+
+  // ---- whitespace control
+  testTrailingDashTrimsFollowingWhitespaceAndNewlines =>
+    self assert: (OutputTest text: "a\{\{ x -}}\n\n   \t b" vars: #{
+      "x" => "X"
+    }) equals: "aXb"
+
+  testLeadingDashTrimsPrecedingWhitespaceAndNewlines =>
+    self assert: (OutputTest text: "a \n\n  \{\{- x }}b" vars: #{
+      "x" => "X"
+    }) equals: "aXb"
+
+  testBothSidesOnOutput =>
+    self assert: (OutputTest text: "a  \{\{- x -}}  b" vars: #{
+      "x" => "X"
+    }) equals: "aXb"
+
+  testSolidDocExample =>
+    // From Solid's tests: `{%- assign var1 = 'yo' -%} {{- var1 -}}` renders `yo`.
+    self assert: (OutputTest text: "\{\{ a -}} \{\{- a -}}" vars: #{
+      "a" => "yo"
+    }) equals: "yoyo"
+
+  testTagsTrimBothSides =>
+    src := "line1\n  \{%- if a -%}\n  inside\n  \{%- endif -%}\n  line2"
+    self assert: (OutputTest text: src vars: #{
+      "a" => true
+    }) equals: "line1inside" ++ "line2"
+
+  testTrimOnlyAffectsAdjacentTextNotOtherMarkup =>
+    self assert: (OutputTest text: "\{\{ a }}  \{\{- b }}" vars: #{
+      "a" => "A",
+      "b" => "B"
+    }) equals: "AB"
+    self assert: (OutputTest text: "\{\{ a }}  \{\{ b }}" vars: #{
+      "a" => "A",
+      "b" => "B"
+    }) equals: "A  B"
+
+  testNoDashKeepsWhitespace =>
+    self assert: (OutputTest text: "\{% if a %}\n x\n\{% endif %}" vars: #{
+      "a" => true
+    }) equals: "\n x\n"
+
+  testTrimmedWhitespaceDoesNotLeakIntoTrimmedValues =>
+    self assert: (OutputTest text: "\{\{- x -}}" vars: #{
+      "x" => "  keep  "
+    }) equals: "  keep  "
+
+  testDashAfterBlockBetweenLoopIterations =>
+    src := "\{% for x in xs -%}\n  [\{\{ x }}]\n\{%- endfor %}"
+    self assert: (OutputTest text: src vars: #{
+      "xs" => #(1, 2)
+    }) equals: "[1][2]"
+
+  testNegativeNumberAfterOpenerIsNotMistakenForTrim =>
+    // `{{ -1 }}` has a space; `{{-1}}` is the trim marker plus `1`.
+    self assert: (OutputTest text: "\{\{ -1 }}" vars: #{}) equals: "-1"

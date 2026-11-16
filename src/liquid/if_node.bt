@@ -1,0 +1,35 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// IfNode — `if` / `unless` with `elsif` and `else`.
+///
+/// `branches` is a list of `{condition, body}` pairs in source order. For
+/// `unless` (`negate`) the FIRST branch runs when its condition is falsy;
+/// `elsif` branches and `else` act as fallbacks, as in Solid.
+typed AstNode subclass: IfNode
+  field: negate :: Boolean = false
+  field: branches :: List = #()
+  field: elseBody :: List = #()
+
+  render: scope :: Scope -> Tuple =>
+    errs := #()
+    chosen := nil
+    index := 0
+    self.branches
+      do: [:branch :: Tuple |
+        chosen isNil
+          ifTrue: [
+            {cond, body} := branch
+            {value, condErrs} := cond eval: scope
+            errs := errs ++ condErrs
+            truth := Renderer truthy: value
+            pass := (index =:= 0 and: [
+              self.negate
+            ]) ifTrue: [truth not] ifFalse: [truth]
+            pass ifTrue: [chosen := body]
+          ]
+        index := index + 1
+      ]
+    body := chosen isNil ifTrue: [self.elseBody] ifFalse: [chosen]
+    {text, bodyErrs} := Renderer renderAll: body scope: scope
+    {text, errs ++ bodyErrs}

@@ -1,0 +1,21 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Segment — one top-level piece of a template, produced by the Lexer.
+///
+/// `kind` is `#text` (literal text in `text`), `#output` (a `{{ }}` markup)
+/// or `#tag` (a `{% %}` markup). For markups, `tokens` holds the lexed
+/// contents. `line` / `column` locate the opener (or the first character of
+/// the text), 1-based, counted in codepoints.
+typed Value subclass: Segment
+  field: kind :: Symbol = #text
+  field: text :: String = ""
+  field: tokens :: List = #()
+  field: line :: Integer = 1
+  field: column :: Integer = 1
+
+  /// Name of a tag (first identifier token), or nil.
+  tagName -> String | Nil =>
+    self.tokens isEmpty ifTrue: [^nil]
+    tok := self.tokens first
+    tok kind =:= #ident ifTrue: [tok value] ifFalse: [nil]

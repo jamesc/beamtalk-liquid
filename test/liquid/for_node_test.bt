@@ -1,0 +1,176 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: ForNodeTest
+
+  // ---- helpers
+
+  /// The rendered text, or the error message if parse or render failed.
+  class text: source :: String vars: vars :: Dictionary -> String =>
+    (self run: source vars: vars) ifOk: [:t |
+      t
+    ] ifError: [:e | "ERROR " ++ e message]
+
+  class run: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t | t render: vars]
+
+  class strict: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t |
+      t render: vars options: #{#strictVariables => true}
+    ]
+
+  class parseError: source :: String -> LiquidError =>
+    (Liquid parse: source) error
+
+  testIteratesList =>
+    self
+      assert: (ForNodeTest text: "\{% for x in xs %}[\{\{ x }}]\{% endfor %}" vars: #{
+        "xs" => #(1, 2, 3)
+      })
+      equals: "[1][2][3]"
+
+  testIteratesPath =>
+    vars := #{"issue" => #{"labels" => #("bug", "ui")}}
+    self assert: (ForNodeTest text: "\{% for l in issue.labels %}\{\{ l }},\{% endfor %}" vars: vars) equals: "bug,ui,"
+
+  testLoopVariableDoesNotLeak =>
+    self
+      assert: (ForNodeTest text: "\{% for x in xs %}\{% endfor %}[\{\{ x }}]" vars: #{
+        "xs" => #(1)
+      })
+      equals: "[]"
+
+  testLoopVariableShadowsOuter =>
+    self
+      assert: (ForNodeTest text: "\{% for x in xs %}\{\{ x }}\{% endfor %}\{\{ x }}" vars: #{
+        "xs" => #(1, 2),
+        "x" => "o"
+      })
+      equals: "12o"
+
+  testEmptyCollectionRendersElse =>
+    src := "\{% for x in xs %}item\{% else %}none\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{"xs" => #()}) equals: "none"
+    self assert: (ForNodeTest text: src vars: #{"xs" => #(1)}) equals: "item"
+
+  testElseNotRenderedForNonEmpty =>
+    self
+      assert: (ForNodeTest text: "\{% for x in xs %}.\{% else %}E\{% endfor %}" vars: #{
+        "xs" => #(1, 2)
+      })
+      equals: ".."
+
+  // ---- forloop (written from the Liquid spec)
+  testForloopIndexes =>
+    src := "\{% for x in xs %}\{\{ forloop.index }}/\{\{ forloop.index0 }}/\{\{ forloop.rindex }}/\{\{ forloop.rindex0 }} \{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #("a", "b", "c")
+    }) equals: "1/0/3/2 2/1/2/1 3/2/1/0 "
+
+  testForloopFirstAndLast =>
+    src := "\{% for x in xs %}\{% if forloop.first %}<\{% endif %}\{\{ x }}\{% if forloop.last %}>\{% endif %}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #("a", "b", "c")
+    }) equals: "<abc>"
+
+  testForloopFirstAndLastOnSingleItem =>
+    src := "\{% for x in xs %}\{\{ forloop.first }}\{\{ forloop.last }}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #("a")
+    }) equals: "truetrue"
+
+  testForloopFirstAndLastAreFalseInTheMiddle =>
+    src := "\{% for x in xs %}\{\{ forloop.first }}-\{\{ forloop.last }} \{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #(1, 2, 3)
+    }) equals: "true-false false-false false-true "
+
+  testForloopLength =>
+    src := "\{% for x in xs %}\{\{ forloop.length }}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #(1, 2, 3)
+    }) equals: "333"
+
+  testForloopName =>
+    self
+      assert: (ForNodeTest text: "\{% for x in items %}\{\{ forloop.name }}\{% endfor %}" vars: #{
+        "items" => #(1)
+      })
+      equals: "x-items"
+
+  testForloopParentloop =>
+    src := "\{% for x in xs %}\{% for y in ys %}\{\{ forloop.parentloop.index }}\{\{ forloop.index }} \{% endfor %}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #(1, 2),
+      "ys" => #(1, 2)
+    }) equals: "11 12 21 22 "
+
+  testTopLevelParentloopIsNil =>
+    src := "\{% for x in xs %}[\{\{ forloop.parentloop }}]\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{"xs" => #(1)}) equals: "[]"
+
+  testForloopIsNotVisibleOutsideLoop =>
+    self
+      assert: (ForNodeTest text: "\{% for x in xs %}\{% endfor %}[\{\{ forloop.index }}]" vars: #{
+        "xs" => #(1)
+      })
+      equals: "[]"
+
+  testInnerForloopDoesNotClobberOuterAfterInnerEnds =>
+    src := "\{% for x in xs %}\{% for y in ys %}\{% endfor %}\{\{ forloop.index }}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #(1, 2),
+      "ys" => #(1)
+    }) equals: "12"
+
+  // ---- nil, scalars and maps (documented choices)
+  testNilRendersElse =>
+    src := "\{% for x in xs %}item\{% else %}none\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{"xs" => nil}) equals: "none"
+    self assert: (ForNodeTest text: src vars: #{}) equals: "none"
+
+  testScalarIteratesOnce =>
+    src := "\{% for x in v %}[\{\{ x }}]\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{"v" => "solo"}) equals: "[solo]"
+    self assert: (ForNodeTest text: src vars: #{"v" => 7}) equals: "[7]"
+    self assert: (ForNodeTest text: src vars: #{"v" => false}) equals: "[false]"
+
+  testMapIteratesKeyValuePairs =>
+    src := "\{% for pair in m %}\{\{ pair[0] }}=\{\{ pair[1] }};\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "m" => #{"a" => 1}
+    }) equals: "a=1;"
+
+  testEmptyMapRendersElse =>
+    self
+      assert: (ForNodeTest text: "\{% for x in m %}i\{% else %}none\{% endfor %}" vars: #{
+        "m" => #{}
+      })
+      equals: "none"
+
+  testBodyErrorsAreReportedOncePerIteration =>
+    r := ForNodeTest strict: "\{% for x in xs %}\{\{ nope }}\{% endfor %}" vars: #{
+      "xs" => #(1, 2)
+    }
+    self assert: r error count equals: 2
+
+  // ---- nesting
+  testIfInsideFor =>
+    src := "\{% for x in xs %}\{% if x > 1 %}\{\{ x }}\{% endif %}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #(1, 2, 3)
+    }) equals: "23"
+
+  testForInsideIfInsideFor =>
+    src := "\{% for x in xs %}\{% if x %}\{% for y in ys %}\{\{ y }}\{% endfor %}\{% endif %}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #(true, false, true),
+      "ys" => #(1, 2)
+    }) equals: "1212"
+
+  testElseBelongsToInnermostFor =>
+    src := "\{% for x in xs %}\{% for y in ys %}y\{% else %}no-y\{% endfor %}\{% endfor %}"
+    self assert: (ForNodeTest text: src vars: #{
+      "xs" => #(1, 2),
+      "ys" => #()
+    }) equals: "no-yno-y"

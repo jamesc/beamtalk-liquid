@@ -1,0 +1,17 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Scope — the variables visible while rendering, plus the render options.
+///
+/// A `for` body renders in a child scope that binds the loop variable and
+/// `forloop`. Scopes are immutable; binding returns a new one.
+typed Value subclass: Scope
+  field: vars :: Dictionary = #{}
+  field: strict :: Boolean = false
+
+  /// A copy with `name` bound to `value`.
+  bind: name :: String to: value :: Object | Nil -> Scope =>
+    Scope new: #{
+      #vars => (self.vars at: name put: value),
+      #strict => self.strict
+    }

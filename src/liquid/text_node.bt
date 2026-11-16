@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// TextNode — literal template text, emitted verbatim.
+typed AstNode subclass: TextNode
+  field: text :: String = ""
+
+  render: _scope :: Scope -> Tuple => {self.text, #()}

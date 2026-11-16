@@ -4,7 +4,7 @@
 [package]
 name = "liquid"
 version = "0.1.0"
-description = "Liquid-subset template engine (tokenizer + AST) for Beamtalk"
+description = "Liquid-subset template engine (lexer, parser, AST, renderer) for Beamtalk"
 licenses = ["Apache-2.0"]
 
 [dependencies]

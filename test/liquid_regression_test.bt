@@ -1,0 +1,102 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Regression tests for the defects of the substring-rewriting PromptRenderer
+/// (BT-4157): each one reproduces a defect and asserts it is gone.
+TestCase subclass: LiquidRegressionTest
+
+  /// Render helper: parse + render, returning the Result.
+  class run: source :: String vars: vars :: Dictionary -> Result =>
+    (Liquid parse: source) andThen: [:t | t render: vars]
+
+  // Defect 1: substituted values were re-scanned for `\{\{`.
+  testValueContainingMustacheRendersLiterally =>
+    r := LiquidRegressionTest run: "A \{\{ issue.description }} B" vars: #{
+      "issue" => #{"description" => "\{\{ issue.description }}"}
+    }
+    self assert: r value equals: "A \{\{ issue.description }} B"
+
+  testValueContainingTagRendersLiterally =>
+    r := LiquidRegressionTest run: "\{\{ x }}" vars: #{
+      "x" => "\{% for i in x %}\{\{ x }}\{% endfor %}"
+    }
+    self assert: r value equals: "\{% for i in x %}\{\{ x }}\{% endfor %}"
+
+  testValueReferencingOtherVariableIsNotExpanded =>
+    r := LiquidRegressionTest run: "\{\{ a }}" vars: #{
+      "a" => "\{\{ b }}",
+      "b" => "secret"
+    }
+    self assert: r value equals: "\{\{ b }}"
+
+  // Defect 2: if / for blocks did not nest.
+  testNestedIf =>
+    src := "\{% if a %}A\{% if b %}B\{% endif %}C\{% endif %}"
+    self assert: (LiquidRegressionTest run: src vars: #{
+      "a" => true,
+      "b" => true
+    }) value equals: "ABC"
+    self assert: (LiquidRegressionTest run: src vars: #{
+      "a" => true,
+      "b" => false
+    }) value equals: "AC"
+    self assert: (LiquidRegressionTest run: src vars: #{
+      "a" => false,
+      "b" => true
+    }) value equals: ""
+
+  testNestedFor =>
+    src := "\{% for x in xs %}\{% for y in ys %}\{\{ x }}\{\{ y }} \{% endfor %}\{% endfor %}"
+    r := LiquidRegressionTest run: src vars: #{
+      "xs" => #(1, 2),
+      "ys" => #("a", "b")
+    }
+    self assert: r value equals: "1a 1b 2a 2b "
+
+  testIfInsideForInsideIf =>
+    src := "\{% if go %}\{% for x in xs %}\{% if x > 1 %}[\{\{ x }}]\{% endif %}\{% endfor %}\{% endif %}"
+    r := LiquidRegressionTest run: src vars: #{"go" => true, "xs" => #(1, 2, 3)}
+    self assert: r value equals: "[2][3]"
+
+  // Defect 3: malformed templates passed through silently.
+  testMissingEndifIsParseError =>
+    r := Liquid parse: "\{% if a %}x"
+    self assert: r isError
+    self assert: (r error detail includesSubstring: "endif")
+
+  testUnclosedOutputIsParseError =>
+    self assert: (Liquid parse: "hello \{\{ name") isError
+
+  testUnknownTagIsParseError =>
+    r := Liquid parse: "\{% frobnicate %}"
+    self assert: r isError
+    self assert: r error kind equals: #unknown_tag
+
+  // Defect 4: conditions were bare variable paths only.
+  testComparisonAndElse =>
+    src := "\{% if n >= 2 and name == ""x"" %}yes\{% elsif n == 1 %}one\{% else %}no\{% endif %}"
+    self assert: (LiquidRegressionTest run: src vars: #{
+      "n" => 3,
+      "name" => "x"
+    }) value equals: "yes"
+    self assert: (LiquidRegressionTest run: src vars: #{
+      "n" => 1,
+      "name" => "x"
+    }) value equals: "one"
+    self assert: (LiquidRegressionTest run: src vars: #{
+      "n" => 0,
+      "name" => "x"
+    }) value equals: "no"
+
+  // Defect 5: exact spacing needed, no whitespace control.
+  testTagSpacingIsFlexible =>
+    r := LiquidRegressionTest run: "\{%if a%}x\{%endif%}\{\{a}}\{\{   a   }}" vars: #{
+      "a" => 1
+    }
+    self assert: r value equals: "x11"
+
+  testWhitespaceControl =>
+    r := LiquidRegressionTest run: "a  \{%- if x -%}  b  \{%- endif -%}  c" vars: #{
+      "x" => true
+    }
+    self assert: r value equals: "abc"

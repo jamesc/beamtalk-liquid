@@ -1,0 +1,143 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: LexerTest
+
+  /// Segment kinds for a source.
+  class kinds: source :: String -> List =>
+    {segs, _errs} := Lexer tokenize: source
+    segs collect: [:s :: Segment | s kind]
+
+  testPlainText =>
+    {segs, errs} := Lexer tokenize: "hello"
+    self assert: segs size equals: 1
+    self assert: segs first text equals: "hello"
+    self assert: errs isEmpty
+
+  testOutputAndTag =>
+    self assert: (LexerTest kinds: "a\{\{ x }}b\{% if y %}c") equals: #(#text, #output, #text, #tag, #text)
+
+  testTokensOfOutput =>
+    {segs, _errs} := Lexer tokenize: "\{\{ a.b | f: 1, ""s"" }}"
+    values := segs first tokens collect: [:t :: Token | t value]
+    self assert: values equals: #("a", ".", "b", "|", "f", ":", 1, ",", "s")
+
+  testFloatNeedsDigitAfterDot =>
+    {segs, _errs} := Lexer tokenize: "\{\{ 1.5 }}"
+    self assert: segs first tokens first value equals: 1.5
+    {segs2, _errs2} := Lexer tokenize: "\{\{ 1.x }}"
+    self assert: (segs2 first tokens collect: [:t :: Token |
+      t value
+    ]) equals: #(1, ".", "x")
+
+  testNegativeNumber =>
+    {segs, _errs} := Lexer tokenize: "\{\{ -3 }}"
+    self assert: segs first tokens first value equals: -3
+
+  testStringsHaveNoEscapes =>
+    {segs, _errs} := Lexer tokenize: "\{\{ 'a\\n' }}"
+    self assert: segs first tokens first value equals: "a\\n"
+
+  testSingleAndDoubleQuotes =>
+    {segs, _errs} := Lexer tokenize: "\{\{ 'x' }}\{\{ ""y"" }}"
+    self assert: (segs collect: [:s :: Segment |
+      s tokens first value
+    ]) equals: #("x", "y")
+
+  testBraceInsideStringDoesNotClose =>
+    {segs, _errs} := Lexer tokenize: "\{\{ ""}}"" }}"
+    self assert: segs first tokens first value equals: "}}"
+
+  testOperators =>
+    {segs, _errs} := Lexer tokenize: "\{% if a == b != c <> d <= e >= f < g > h %}"
+    ops := (segs first tokens select: [:t :: Token |
+      t kind =:= #op
+    ]) collect: [:t :: Token | t value]
+    self assert: ops equals: #("==", "!=", "<>", "<=", ">=", "<", ">")
+
+  testPositionsAreLineAndColumn =>
+    {segs, _errs} := Lexer tokenize: "ab\n  \{\{ x }}"
+    self assert: segs last line equals: 2
+    self assert: segs last column equals: 3
+    self assert: segs last tokens first line equals: 2
+    self assert: segs last tokens first column equals: 6
+
+  testColumnsCountCodepointsNotBytes =>
+    {segs, _errs} := Lexer tokenize: "日本語\{\{ x }}"
+    self assert: segs last column equals: 4
+    {segs2, _errs2} := Lexer tokenize: "😀😀\{\{ x }}"
+    self assert: segs2 last column equals: 3
+
+  testUnterminatedOutputIsError =>
+    {_segs, errs} := Lexer tokenize: "a\n\{\{ x"
+    self assert: errs size equals: 1
+    self assert: errs first line equals: 2
+    self assert: errs first column equals: 1
+    self assert: errs first detail equals: "Tag or Object not properly terminated"
+
+  testUnterminatedStringIsError =>
+    {_segs, errs} := Lexer tokenize: "\{\{ ""abc }}"
+    self assert: errs size equals: 1
+    self assert: (errs first detail includesSubstring: "not terminated")
+
+  testUnexpectedCharacterThenContinues =>
+    {segs, errs} := Lexer tokenize: "\{\{ a ; b }}after"
+    self assert: errs size equals: 1
+    self assert: errs first column equals: 6
+    self assert: errs first detail equals: "Unexpected character ';'"
+    self assert: segs last text equals: "after"
+
+  // Whitespace control, closing side (Solid's own test: renders `yo`).
+  testClosingDashTrimsFollowingWhitespaceIncludingNewlines =>
+    {segs, _errs} := Lexer tokenize: "\{\{ a -}}  \n\t b"
+    self assert: segs last text equals: "b"
+
+  // Leading side (Liquid docs): `{%-` / `{{-` trims whitespace before.
+  testOpeningDashTrimsPrecedingWhitespace =>
+    {segs, _errs} := Lexer tokenize: "a  \n \{\{- x }}"
+    self assert: segs first text equals: "a"
+
+  testBothSides =>
+    {segs, _errs} := Lexer tokenize: "a \{%- if x -%} b"
+    self assert: (segs collect: [:s :: Segment |
+      s kind
+    ]) equals: #(#text, #tag, #text)
+    self assert: segs first text equals: "a"
+    self assert: segs last text equals: "b"
+
+  testTrimmedTextVanishes =>
+    {segs, _errs} := Lexer tokenize: "\{\{ a -}}   \{\{ b }}"
+    self assert: segs size equals: 2
+
+  testDashWithoutTrimKeepsWhitespace =>
+    {segs, _errs} := Lexer tokenize: "a \{\{ x }} b"
+    self assert: segs first text equals: "a "
+    self assert: segs last text equals: " b"
+
+  testRawBodyIsLiteral =>
+    {segs, _errs} := Lexer tokenize: "\{% raw %}\{\{ x }} \{% if %}\{% endraw %}!"
+    self assert: (segs collect: [:s :: Segment |
+      s text
+    ]) equals: #("\{\{ x }} \{% if %}", "!")
+
+  testRawTrimmedByDash =>
+    {segs, _errs} := Lexer tokenize: "\{% raw -%}  body  \{%- endraw %}"
+    self assert: segs first text equals: "body"
+
+  testUnterminatedRawIsErrorWithPosition =>
+    {_segs, errs} := Lexer tokenize: "x\n\{% raw %}never"
+    self assert: errs size equals: 1
+    self assert: errs first line equals: 2
+    self assert: errs first column equals: 1
+    self assert: errs first detail equals: "Raw tag not terminated"
+
+  testCommentIsSkippedAndMalformedMarkupInsideIsFine =>
+    {segs, errs} := Lexer tokenize: "a\{% comment %} \{% if \{\{ ""unterminated ; \{% endcomment %}b"
+    self assert: errs isEmpty
+    self assert: (segs collect: [:s :: Segment | s text]) equals: #("a", "b")
+
+  testUnterminatedCommentIsErrorWithPosition =>
+    {_segs, errs} := Lexer tokenize: "\{% comment %}abc"
+    self assert: errs first detail equals: "Comment tag not terminated"
+    self assert: errs first line equals: 1
+    self assert: errs first column equals: 1

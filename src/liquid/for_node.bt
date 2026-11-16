@@ -1,0 +1,56 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// ForNode — `for x in collection` with `forloop` and `else`.
+///
+/// Collections: a list iterates its elements; a map iterates `[key, value]`
+/// pairs; `nil` and an empty collection render the `else` body; any other
+/// value (string, number, boolean) iterates once as a one-element list.
+typed AstNode subclass: ForNode
+  field: varName :: String = ""
+  field: collection :: Expr = Literal new
+  field: collectionText :: String = ""
+  field: body :: List = #()
+  field: elseBody :: List = #()
+
+  /// The items to iterate, as a list.
+  class itemsOf: value :: Object | Nil -> List =>
+    value isNil ifTrue: [^#()]
+    (value isKindOf: List) ifTrue: [^value]
+    (value isKindOf: Dictionary) ifTrue: [
+      ^value keys collect: [:k :: String | #(k, value at: k)]
+    ]
+    #(value)
+
+  render: scope :: Scope -> Tuple =>
+    {coll, errs} := self.collection eval: scope
+    items := ForNode itemsOf: coll
+    items isEmpty
+      ifTrue: [
+        {text, elseErrs} := Renderer renderAll: self.elseBody scope: scope
+        ^{text, errs ++ elseErrs}
+      ]
+    parent := scope vars at: "forloop" ifAbsent: [nil]
+    total := items size
+    out := ""
+    position := 0
+    items
+      do: [:item :: Object |
+        forloop := #{
+          "index" => position + 1,
+          "index0" => position,
+          "rindex" => total - position,
+          "rindex0" => total - position - 1,
+          "first" => position =:= 0,
+          "last" => position =:= (total - 1),
+          "length" => total,
+          "parentloop" => parent,
+          "name" => "{self.varName}-{self.collectionText}"
+        }
+        inner := (scope bind: self.varName to: item) bind: "forloop" to: forloop
+        {text, bodyErrs} := Renderer renderAll: self.body scope: inner
+        out := out ++ text
+        errs := errs ++ bodyErrs
+        position := position + 1
+      ]
+    {out, errs}
