@@ -27,9 +27,11 @@ typed Expr subclass: Compare
 
   class contains: l :: Object | Nil item: r :: Object | Nil -> Boolean =>
     (l isNil or: [r isNil]) ifTrue: [^false]
-    (l isKindOf: List) ifTrue: [^l includes: r]
-    (l isKindOf: String) ifTrue: [^l includesSubstring: (Renderer stringify: r)]
-    false
+    l match: [
+      items :: List -> items includes: r;
+      text :: String -> text includesSubstring: (Renderer stringify: r);
+      _ -> false
+    ]
 
   /// Ordering operators `< > <= >=`.
   class order: op :: String left: l :: Object | Nil right: r :: Object | Nil -> Tuple =>

@@ -24,15 +24,14 @@ typed Object subclass: Renderer
   /// Convert a value to output text. `nil` is empty; lists concatenate
   /// their elements; maps use their printString.
   class stringify: value :: Object | Nil -> String =>
-    value isNil ifTrue: [^""]
-    (value isKindOf: String) ifTrue: [^value]
-    (value isKindOf: List)
-      ifTrue: [
-        ^value inject: "" into: [:acc :: String :each :: Object |
-          acc ++ (self stringify: each)
-        ]
-      ]
-    value displayString
+    value match: [
+      nil -> "";
+      s :: String -> s;
+      items :: List -> items inject: "" into: [:acc :: String :each :: Object |
+        acc ++ (self stringify: each)
+      ];
+      _ -> value displayString
+    ]
 
   /// One step of a path lookup. Returns `{found, value}`.
   ///
@@ -40,32 +39,35 @@ typed Object subclass: Renderer
   /// negative counts from the end). `size` works on lists, maps (when there
   /// is no `size` key) and strings; `first` / `last` work on lists.
   class lookup: container :: Object | Nil key: key :: Object | Nil -> Tuple =>
-    (container isKindOf: Dictionary)
-      ifTrue: [
-        (key isKindOf: String) ifFalse: [^{false, nil}]
-        (container includesKey: key) ifTrue: [^{true, container at: key}]
-        key =:= "size" ifTrue: [^{true, container size}]
-        ^{false, nil}
-      ]
-    (container isKindOf: List)
-      ifTrue: [
-        (key isKindOf: Integer)
-          ifTrue: [
-            n := container size
-            idx := key < 0 ifTrue: [n + key] ifFalse: [key]
-            (idx >= 0 and: [idx < n]) ifTrue: [^{true, container at: idx + 1}]
-            ^{false, nil}
-          ]
-        key =:= "size" ifTrue: [^{true, container size}]
-        key =:= "first" ifTrue: [
-          ^{true, container isEmpty ifTrue: [nil] ifFalse: [container first]}
-        ]
-        key =:= "last" ifTrue: [
-          ^{true, container isEmpty ifTrue: [nil] ifFalse: [container last]}
-        ]
-        ^{false, nil}
-      ]
-    ((container isKindOf: String) and: [
-      key =:= "size"
-    ]) ifTrue: [^{true, container length}]
+    container match: [
+      map :: Dictionary -> self lookupMap: map key: key;
+      items :: List -> self lookupList: items key: key;
+      text :: String -> key =:= "size" ifTrue: [
+        {true, text length}
+      ] ifFalse: [{false, nil}];
+      _ -> {false, nil}
+    ]
+
+  /// Map step of `lookup:key:`: string keys, plus `size` when absent.
+  class lookupMap: map :: Dictionary key: key :: Object | Nil -> Tuple =>
+    (key isKindOf: String) ifFalse: [^{false, nil}]
+    (map includesKey: key) ifTrue: [^{true, map at: key}]
+    key =:= "size" ifTrue: [^{true, map size}]
+    {false, nil}
+
+  /// List step of `lookup:key:`: integer index, `size`, `first`, `last`.
+  class lookupList: items :: List key: key :: Object | Nil -> Tuple =>
+    key match: [
+      idx :: Integer -> self lookupIndex: items at: idx;
+      "size" -> {true, items size};
+      "first" -> {true, items isEmpty ifTrue: [nil] ifFalse: [items first]};
+      "last" -> {true, items isEmpty ifTrue: [nil] ifFalse: [items last]};
+      _ -> {false, nil}
+    ]
+
+  /// 0-based list index; negative counts from the end.
+  class lookupIndex: items :: List at: key :: Integer -> Tuple =>
+    n := items size
+    idx := key < 0 ifTrue: [n + key] ifFalse: [key]
+    (idx >= 0 and: [idx < n]) ifTrue: [^{true, items at: idx + 1}]
     {false, nil}

@@ -15,12 +15,12 @@ typed AstNode subclass: ForNode
 
   /// The items to iterate, as a list.
   class itemsOf: value :: Object | Nil -> List =>
-    value isNil ifTrue: [^#()]
-    (value isKindOf: List) ifTrue: [^value]
-    (value isKindOf: Dictionary) ifTrue: [
-      ^value keys collect: [:k :: String | #(k, value at: k)]
+    value match: [
+      nil -> #();
+      items :: List -> items;
+      map :: Dictionary -> map keys collect: [:k :: String | #(k, map at: k)];
+      _ -> #(value)
     ]
-    #(value)
 
   render: scope :: Scope -> Tuple =>
     {coll, errs} := self.collection eval: scope
