@@ -48,12 +48,14 @@ typed Object subclass: Renderer
       _ -> {false, nil}
     ]
 
+  /// Map step of `lookup:key:`: string keys, plus `size` when absent.
   class lookupMap: map :: Dictionary key: key :: Object | Nil -> Tuple =>
     (key isKindOf: String) ifFalse: [^{false, nil}]
     (map includesKey: key) ifTrue: [^{true, map at: key}]
     key =:= "size" ifTrue: [^{true, map size}]
     {false, nil}
 
+  /// List step of `lookup:key:`: integer index, `size`, `first`, `last`.
   class lookupList: items :: List key: key :: Object | Nil -> Tuple =>
     key match: [
       idx :: Integer -> self lookupIndex: items at: idx;
@@ -63,6 +65,7 @@ typed Object subclass: Renderer
       _ -> {false, nil}
     ]
 
+  /// 0-based list index; negative counts from the end.
   class lookupIndex: items :: List at: key :: Integer -> Tuple =>
     n := items size
     idx := key < 0 ifTrue: [n + key] ifFalse: [key]

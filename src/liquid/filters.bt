@@ -34,15 +34,14 @@ typed Object subclass: Filters
   /// empty list or an empty map.
   class default: input :: Object | Nil args: args :: List -> Object | Nil =>
     fallback := args isEmpty ifTrue: [""] ifFalse: [args first]
-    empty := input isNil
-      or: [
-        input =:= false
-          or: [
-            ((input isKindOf: String) or: [
-              (input isKindOf: List) or: [input isKindOf: Dictionary]
-            ]) and: [input isEmpty]
-          ]
-      ]
+    empty := input match: [
+      nil -> true;
+      false -> true;
+      text :: String -> text isEmpty;
+      items :: List -> items isEmpty;
+      map :: Dictionary -> map isEmpty;
+      _ -> false
+    ]
     empty ifTrue: [fallback] ifFalse: [input]
 
   /// `truncate: length = 50, ellipsis = "..."`. The ellipsis counts towards the length.
