@@ -36,7 +36,7 @@ typed Object subclass: Filters
     fallback := args isEmpty ifTrue: [""] ifFalse: [args first]
     empty := input match: [
       nil -> true;
-      false -> true;
+      f :: False -> true;
       text :: String -> text isEmpty;
       items :: List -> items isEmpty;
       map :: Dictionary -> map isEmpty;
