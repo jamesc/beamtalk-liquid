@@ -72,34 +72,33 @@ typed Object subclass: Filters
 
   /// A list view of a value: lists flatten, nil is empty, anything else is a single item.
   class itemsOf: input :: Object | Nil -> List =>
-    input isNil ifTrue: [^#()]
-    (input isKindOf: List) ifTrue: [^input flatten]
-    #(input)
+    input match: [
+      nil -> #();
+      items :: List -> items flatten;
+      _ -> #(input)
+    ]
 
   class size: input :: Object | Nil -> Integer =>
-    (input isKindOf: String) ifTrue: [^input length]
-    ((input isKindOf: List) or: [
-      input isKindOf: Dictionary
-    ]) ifTrue: [^input size]
-    0
+    input match: [
+      text :: String -> text length;
+      items :: List -> items size;
+      map :: Dictionary -> map size;
+      _ -> 0
+    ]
 
   class first: input :: Object | Nil -> Object | Nil =>
-    (input isKindOf: List) ifTrue: [
-      ^input isEmpty ifTrue: [nil] ifFalse: [input first]
+    input match: [
+      items :: List -> items isEmpty ifTrue: [nil] ifFalse: [items first];
+      text :: String -> text isEmpty ifTrue: [nil] ifFalse: [text first];
+      _ -> nil
     ]
-    (input isKindOf: String) ifTrue: [
-      ^input isEmpty ifTrue: [nil] ifFalse: [input first]
-    ]
-    nil
 
   class last: input :: Object | Nil -> Object | Nil =>
-    (input isKindOf: List) ifTrue: [
-      ^input isEmpty ifTrue: [nil] ifFalse: [input last]
+    input match: [
+      items :: List -> items isEmpty ifTrue: [nil] ifFalse: [items last];
+      text :: String -> text isEmpty ifTrue: [nil] ifFalse: [text last];
+      _ -> nil
     ]
-    (input isKindOf: String) ifTrue: [
-      ^input isEmpty ifTrue: [nil] ifFalse: [input last]
-    ]
-    nil
 
   /// HTML-escape `& < > " '` (as `&amp; &lt; &gt; &quot; &#39;`).
   class escape: input :: Object | Nil -> String =>
